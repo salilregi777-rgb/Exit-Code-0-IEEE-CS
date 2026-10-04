@@ -94,11 +94,11 @@ def correction_matches(question, response):
 
 
 def evaluate_submission(question, user_submission, is_double_commit=False, hint_used=False, swap_used=False):
-    """Grade fields with legacy modifiers only for pre-update power-up uses.
+    """Grade fields, with an all-or-nothing +15 bonus for Double Commit.
 
     Root-cause prose is not scored. The correction must be one valid code line.
-    Double Commit applies to the raw score first; hint and swap then each deduct
-    10% of the question's base points, with the final score floored at zero.
+    Legacy hint/swap costs apply after grading. Current hint/swap costs are
+    recorded separately against the team total when the tool is used.
     """
     base_points = max(0.0, float(question.get("points", question.get("base_points", 20))))
 
@@ -138,13 +138,15 @@ def evaluate_submission(question, user_submission, is_double_commit=False, hint_
 
     raw_total = round(type_score + loc_score + cause_score + output_score + corr_score, 2)
     modified_total = raw_total
+    perfect = base_points > 0 and raw_total == round(base_points, 2)
+    double_bonus = DOUBLE_COMMIT_BONUS if is_double_commit and perfect else 0
     if is_double_commit:
-        modified_total = raw_total * 2.0 if raw_total >= 0.60 * base_points else 0.0
+        modified_total = base_points + double_bonus if perfect else 0.0
     hint_penalty = round(base_points * HINT_PENALTY_RATE, 2) if hint_used else 0.0
     swap_penalty = round(base_points * SWAP_PENALTY_RATE, 2) if swap_used else 0.0
     penalty_total = hint_penalty + swap_penalty
     final_total = max(0.0, modified_total - penalty_total)
-    max_score = max(0.0, base_points * (2 if is_double_commit else 1) - penalty_total)
+    max_score = max(0.0, base_points + (DOUBLE_COMMIT_BONUS if is_double_commit else 0) - penalty_total)
     answer_status = "correct" if base_points > 0 and raw_total >= base_points else "partial" if raw_total > 0 else "incorrect"
 
     result = {
@@ -167,6 +169,8 @@ def evaluate_submission(question, user_submission, is_double_commit=False, hint_
                       "applied": round(min(modified_total, penalty_total), 2)},
         "percentage": round((raw_total / base_points) * 100, 1) if base_points > 0 else 0
     }
+    if is_double_commit:
+        result.update(double_commit_rule="perfect-plus-15-v1", double_commit_bonus=double_bonus)
     result["field_results"] = answer_field_results(result, base_points)
     return result
 
@@ -242,8 +246,8 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
         if not assignment:
             return None, "This question is not currently assigned to your team."
 
-        # New tools adjust the team total at activation. Existing pending uses
-        # without an adjustment retain their original rules until submitted.
+        # Hint/swap adjust the team at activation. Double Commit earns its
+        # bonus only when this answer is completely correct.
         cur.execute("""
             SELECT * FROM powerups
             WHERE team_id = ? AND powerup_type = 'DOUBLE_COMMIT'
@@ -269,7 +273,7 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
 
         eval_result = evaluate_submission(
             dict(question), submission_data,
-            is_double_commit=is_double and double_armed["score_adjustment"] == 0,
+            is_double_commit=is_double,
             hint_used=bool(hint) and hint["score_adjustment"] == 0,
             swap_used=bool(swapped) and swapped["score_adjustment"] == 0
         )
@@ -277,7 +281,7 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
         eval_result["powerup_adjustments"] = {
             "hint": hint["score_adjustment"] if hint else 0,
             "swap": swapped["score_adjustment"] if swapped else 0,
-            "double_commit": double_armed["score_adjustment"] if double_armed else 0,
+            "double_commit": 0,
         }
         # Keep completed reviews tied to the exact public prompt answered, even
         # when organisers update the question bank later.
@@ -322,7 +326,7 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
         if is_double:
             cur.execute("""
                 UPDATE powerups
-                SET is_used = 1, is_armed = 0, used_at = CURRENT_TIMESTAMP
+                SET is_used = 1, is_armed = 0, score_adjustment = 0, used_at = CURRENT_TIMESTAMP
                 WHERE team_id = ? AND powerup_type = 'DOUBLE_COMMIT'
             """, (team_id,))
 
@@ -460,6 +464,11 @@ def activate_git_revert(team_id, question_id, enforce_live=False):
                 WHERE team_id = ? AND question_id = ?
             """, (asgn["question_order"], team_id, new_qid))
 
+        # An armed wager follows a question replacement in the same slot.
+        cur.execute("""UPDATE powerups SET target_question_id = ?
+            WHERE team_id = ? AND powerup_type = 'DOUBLE_COMMIT'
+              AND is_armed = 1 AND target_question_id = ?""", (new_qid, team_id, question_id))
+
         # Mark powerup used
         cur.execute("""
             UPDATE powerups
@@ -477,7 +486,7 @@ def activate_git_revert(team_id, question_id, enforce_live=False):
         conn.close()
 
 def arm_double_commit(team_id, question_id, enforce_live=False):
-    """Apply the team's one-time +15 Double Commit bonus immediately."""
+    """Arm one question for full points plus 15, or zero unless fully correct."""
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -498,13 +507,13 @@ def arm_double_commit(team_id, question_id, enforce_live=False):
 
         cur.execute("""
             UPDATE powerups
-            SET is_used = 1, is_armed = 0, used_at = CURRENT_TIMESTAMP,
-                target_question_id = ?, score_adjustment = ?
+            SET is_used = 0, is_armed = 1, used_at = NULL,
+                target_question_id = ?, score_adjustment = 0
             WHERE team_id = ? AND powerup_type = 'DOUBLE_COMMIT'
-        """, (question_id, DOUBLE_COMMIT_BONUS, team_id))
+        """, (question_id, team_id))
         recalculate_team_score(cur, team_id)
         conn.commit()
-        return True, "Double Commit used. 15 points added to your team score."
+        return True, "Double Commit armed. A 100% correct answer earns full question points plus 15; any other answer earns 0."
     except Exception as e:
         conn.rollback()
         return False, "Power-up could not be saved. Please try again."

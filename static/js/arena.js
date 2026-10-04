@@ -51,7 +51,8 @@
     for (const [key, label, used] of [['hint', 'Hint', result?.hint_used], ['swap', 'Swap', result?.swap_used], ['double_commit', 'Double Commit', result?.is_double_commit]]) {
       if (!used) continue;
       const adjustment = Number(result?.powerup_adjustments?.[key] || 0);
-      if (adjustment) modifiers.push(`${label}: ${adjustment > 0 ? '+' : '−'}${Math.abs(adjustment)} already applied to team total`);
+      if (key === 'double_commit' && result?.double_commit_rule === 'perfect-plus-15-v1') modifiers.push(Number(result.double_commit_bonus) === 15 ? 'Double Commit: 100% correct, +15 bonus included in the automated question award' : 'Double Commit: not 100% correct, so the automated question award is 0 points');
+      else if (adjustment) modifiers.push(`${label}: ${adjustment > 0 ? '+' : '−'}${Math.abs(adjustment)} already applied to team total`);
       else if (key !== 'double_commit' && result?.penalties?.[key]) modifiers.push(`${label}: −${result.penalties[key]} under the original scoring rules`);
       else modifiers.push(`${label} used under the original scoring rules`);
     }
@@ -70,7 +71,9 @@
         item.append(label, outcome); breakdown.append(item);
       }
       const note = document.createElement('span'); note.className = 'answer-breakdown-note';
-      note.textContent = 'These are question points. Fixed power-up changes are applied separately to your team total, once per tool. Organizer overrides change the question total only.';
+      note.textContent = result?.double_commit_rule === 'perfect-plus-15-v1'
+        ? 'These checks show each part’s correctness before Double Commit. A 100% correct answer earns the question points plus 15; anything less earns 0 for the whole question. Hint and swap costs remain separate from the question award.'
+        : 'These are question points. Hint and swap costs are applied separately to your team total, once per tool. Organizer overrides change the question total only.';
       if (result.score_overridden) note.textContent += ' Your total includes an organizer adjustment.';
       status.append(heading, breakdown, note);
     }
@@ -116,9 +119,10 @@
       const pu = progress?.powerups?.[key];
       button.disabled = disabled || !!pu?.is_used || !!pu?.is_armed;
       const label = button.querySelector('[data-powerup-status]');
-      const descriptions = { 'rubber-duck': 'Get a hint · −5 points now', 'git-revert': 'Replace challenge · −7 points now', 'double-commit': 'Add +15 points now' };
+      const descriptions = { 'rubber-duck': 'Get a hint · −5 points now', 'git-revert': 'Replace challenge · −7 points now', 'double-commit': '100% correct: +15 bonus · Otherwise: 0' };
       const applied = Number(pu?.score_adjustment || 0);
-      label.textContent = pu?.is_used ? `Used${applied ? ` · ${applied > 0 ? '+' : '−'}${Math.abs(applied)} points applied` : ''}` : pu?.is_armed ? 'Armed under original rules' : descriptions[button.dataset.powerup];
+      const targetOrder = progress?.questions.find(question => question.id === pu?.target_question_id)?.question_order;
+      label.textContent = pu?.is_used ? `Used${applied ? ` · ${applied > 0 ? '+' : '−'}${Math.abs(applied)} points applied` : ''}` : pu?.is_armed ? `Armed${targetOrder ? ` for Question ${targetOrder}` : ''} · 100% correct or 0` : descriptions[button.dataset.powerup];
       if (button.dataset.powerup === 'git-revert' && current()?.is_completed) button.disabled = true;
     });
     fields.forEach(name => { byId(name).disabled = busy || switching || locked || !progress; });
@@ -198,7 +202,9 @@
   async function submit(event) {
     event.preventDefault(); if (busy || isAnswered() || !canSubmit() || !progress || !validate()) return;
     busy = true; updateControls();
-    const confirmed = await App.confirm('Your answer will be scored and locked. You cannot edit or submit this question again.', { title: 'Lock this answer?', confirmText: 'Lock answer' });
+    const doubleCommit = progress?.powerups?.DOUBLE_COMMIT;
+    const doubleCommitWarning = doubleCommit?.is_armed && doubleCommit.target_question_id === qid ? 'Double Commit is armed. Every part must be 100% correct to earn the question points plus 15; otherwise this question earns 0 points. ' : '';
+    const confirmed = await App.confirm(`${doubleCommitWarning}Your answer will be scored and locked. You cannot edit or submit this question again.`, { title: 'Lock this answer?', confirmText: 'Lock answer' });
     if (!page.active) return;
     if (!confirmed) { busy = false; updateControls(); return; }
     if (isAnswered() || !canSubmit()) { busy = false; updateControls(); return; }
@@ -232,7 +238,7 @@
   async function usePowerup(button) {
     if (busy || isAnswered() || !canSubmit()) return;
     const type = button.dataset.powerup;
-    const descriptions = { 'rubber-duck': ['Use Rubber Duck?', 'Reveal one hint and deduct 5 points from your team total immediately. One use per team.'], 'git-revert': ['Replace this challenge?', 'Replace this challenge permanently and deduct 7 points from your team total immediately. One use per team.'], 'double-commit': ['Use Double Commit?', 'Add 15 points to your team total immediately. Your answer will earn its normal question points. One use per team.'] };
+    const descriptions = { 'rubber-duck': ['Use Rubber Duck?', 'Reveal one hint and deduct 5 points from your team total immediately. One use per team.'], 'git-revert': ['Replace this challenge?', 'Replace this challenge permanently and deduct 7 points from your team total immediately. One use per team.'], 'double-commit': ['Arm Double Commit?', 'Apply Double Commit to this question. If every part of your answer is 100% correct, earn the question points plus a 15-point bonus. Otherwise earn 0 for the whole question, even with partially correct answers. Your score changes only when you submit. One use per team.'] };
     if (!await App.confirm(descriptions[type][1], { title: descriptions[type][0], confirmText: 'Activate' })) return;
     if (!page.active) return;
     busy = true; updateControls(); button.classList.add('loading');

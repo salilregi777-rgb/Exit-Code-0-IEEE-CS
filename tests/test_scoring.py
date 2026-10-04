@@ -174,14 +174,14 @@ def test_git_revert():
 def test_double_commit():
     team_id, _ = register_team("DoubleTeam", "Double1", "Double2")
 
-    # Double Commit adds a fixed team bonus immediately.
+    # Arming Double Commit reserves it for this question without awarding points.
     ok, msg = arm_double_commit(team_id, "Q01")
     assert ok is True
     conn = get_db_connection()
-    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == 15
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == 0
     conn.close()
 
-    # 1. A correct answer retains the ordinary question points.
+    # Only a completely correct answer earns the ordinary points plus 15.
     accurate_sub = {
         "error_location": "Line 3",
         "error_type": "Logical Error",
@@ -192,8 +192,10 @@ def test_double_commit():
     res, err = process_submission(team_id, "Q01", accurate_sub)
     assert err is None
     assert res["is_double_commit"] == 1
-    assert res["total_score"] == 20
-    assert res["powerup_adjustments"]["double_commit"] == 15
+    assert res["total_score"] == res["max_score"] == 35
+    assert res["raw_total"] == 20 and res["double_commit_bonus"] == 15
+    assert res["double_commit_rule"] == "perfect-plus-15-v1"
+    assert res["powerup_adjustments"]["double_commit"] == 0
     conn = get_db_connection()
     assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == 35
     conn.close()
@@ -324,15 +326,35 @@ def test_c_operator_token_boundaries_cannot_be_erased_by_whitespace():
     (False, False, False), (True, False, False), (False, True, False), (True, True, False),
     (False, False, True), (True, False, True), (False, True, True), (True, True, True),
 ])
-def test_legacy_modifiers_are_consistent_and_visible(hint, swap, double):
+def test_perfect_double_commit_and_legacy_costs_are_consistent_and_visible(hint, swap, double):
     question = sample_question()
     result = evaluate_submission(question, reference_answer(question), double, hint, swap)
     assert result["raw_total"] == result["raw_score"] == 20
-    assert result["total_score"] == (40 if double else 20) - (2 if hint else 0) - (2 if swap else 0)
+    assert result["total_score"] == (35 if double else 20) - (2 if hint else 0) - (2 if swap else 0)
     assert result["max_score"] == result["total_score"]
     assert result["penalties"]["hint"] == (2 if hint else 0)
     assert result["penalties"]["swap"] == (2 if swap else 0)
     assert result["answer_status"] == "correct"  # Penalties do not mark a correct answer wrong.
+
+
+@pytest.mark.parametrize("points", [20, 25, 35])
+@pytest.mark.parametrize("wrong_field", [None, "error_location", "error_type", "expected_output", "correction"])
+def test_double_commit_requires_every_field_at_every_difficulty(points, wrong_field):
+    question = {**sample_question(), "points": points}
+    submission = reference_answer(question)
+    if wrong_field:
+        submission[wrong_field] = "incorrect"
+    result = evaluate_submission(question, submission, is_double_commit=True)
+    assert result["total_score"] == (0 if wrong_field else points + 15)
+    assert result["double_commit_bonus"] == (0 if wrong_field else 15)
+    assert result["max_score"] == points + 15
+    assert result["double_commit_rule"] == "perfect-plus-15-v1"
+    assert result["answer_status"] == ("partial" if wrong_field else "correct")
+    assert len(result["field_results"]) == 4
+    if wrong_field:
+        assert 0 < result["raw_total"] < points
+    else:
+        assert result["raw_total"] == points
 
 
 def test_legacy_penalties_never_create_negative_question_points_or_a_double_commit_reward():

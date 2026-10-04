@@ -173,6 +173,27 @@ def init_db(force_reset=False):
                 assign_initial_questions(team["id"], cur)
         conn.execute("INSERT INTO data_migrations(name) VALUES (?)", (bank_version,))
 
+    # Withdraw only premature bonuses for unanswered questions. Completed
+    # submissions keep their recorded scores; pending uses adopt the new wager.
+    pending_bonuses = conn.execute("""SELECT p.id, p.team_id, p.target_question_id
+        FROM powerups p WHERE p.powerup_type = 'DOUBLE_COMMIT'
+          AND p.score_adjustment != 0
+          AND NOT EXISTS (SELECT 1 FROM submissions s
+            WHERE s.team_id = p.team_id AND s.question_id = p.target_question_id)""").fetchall()
+    for powerup in pending_bonuses:
+        replacement = conn.execute("""SELECT current.question_id FROM question_assignments old
+            JOIN question_assignments current ON current.team_id = old.team_id
+              AND current.question_order = old.question_order AND current.is_abandoned = 0
+            WHERE old.team_id = ? AND old.question_id = ? AND old.is_abandoned = 1""",
+            (powerup["team_id"], powerup["target_question_id"])).fetchone()
+        target = replacement["question_id"] if replacement else powerup["target_question_id"]
+        if conn.execute("SELECT 1 FROM submissions WHERE team_id = ? AND question_id = ?",
+                        (powerup["team_id"], target)).fetchone():
+            continue
+        conn.execute("""UPDATE powerups SET score_adjustment = 0, is_used = 0,
+            is_armed = 1, used_at = NULL, target_question_id = ? WHERE id = ?""", (target, powerup["id"]))
+        recalculate_team_score(conn.cursor(), powerup["team_id"])
+
     conn.commit()
     conn.close()
 
@@ -339,6 +360,9 @@ def _answer_summary(conn, team_id, question_id, points, include_submission=False
         result["score_overridden"] = bool(row["override_reason"])
         result["penalties"] = evaluation.get("penalties", {})
         result["powerup_adjustments"] = evaluation.get("powerup_adjustments", {})
+        for key in ("double_commit_rule", "double_commit_bonus"):
+            if key in evaluation:
+                result[key] = evaluation[key]
         for key in ("hint_used", "swap_used", "is_double_commit"):
             result[key] = evaluation.get(key, 0)
         if include_submission:

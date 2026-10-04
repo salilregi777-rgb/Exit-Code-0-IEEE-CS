@@ -124,3 +124,10 @@ The demo timer and animation controls pause together, suspend offscreen/when the
 - The correct-option display lasts 1.4 seconds before advancing; the server's existing quiz deadline continues during that feedback. Unanswered question answer keys remain private.
 - Local preview backup: `.local-backups/preview-before-fixed-powerups-20261004-231419.db`. Teams, all 30 saved answers, scores, assignments, event state, controls, feedback and pre-existing power-up fields were verified unchanged after migration. Historical tools received no additional charge.
 - JavaScript syntax and Git whitespace checks passed. No event reset, commit or push. The preview runs on port 5050; organizers sign in once to establish the new separate cookie.
+
+## Conditional Double Commit · 4 October 2026
+
+- **287 Python tests passed** and all 10 critical acceptance scenarios passed. Double Commit now arms without awarding points; a completely correct answer earns the normal question points plus 15, while any partially correct or incorrect answer earns zero for that question. Hint and swap retain their immediate −5/−7 team costs.
+- Tests cover each incorrect field at all three point values, concurrent activation, immutable retries, persistence, question replacement, individual correctness reviews, and organizer override limits. Pending bonuses from the prior immediate rule are removed and rearmed; completed historical awards remain unchanged.
+- `scripts/powerup_smoke.cjs` passed in Chrome: unchanged total while armed, correct award after a perfect answer, zero after a partial answer, refresh/retry handling, saved review messages and leaderboard totals. No browser page errors. JavaScript syntax and whitespace checks passed.
+- Local preview restarted on port 5050 after backup to `.local-backups/preview-before-conditional-double-20261004-233145.db`. Teams, all 30 submissions, scores, power-ups, assignments, event state, controls and feedback match the backup. No event reset, commit or push.

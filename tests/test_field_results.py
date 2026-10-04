@@ -7,7 +7,7 @@ pytestmark = pytest.mark.usefixtures("ordered_bank")
 from app import app
 from database import init_db, register_team, get_db_connection, get_client_question, get_team_assigned_questions
 from event_manager import start_event
-from scoring import evaluate_submission, process_submission, activate_rubber_duck
+from scoring import evaluate_submission, process_submission, activate_rubber_duck, arm_double_commit
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,7 @@ def test_full_credit_reports_four_fields_before_modifiers(double, hint, swap):
     assert all(row["status"] == "correct" and row["score"] == row["max_score"] for row in rows)
     assert all(set(row) == {"key", "label", "status", "score", "max_score"} for row in rows)
     assert sum(row["score"] for row in rows) == result["raw_total"] == 20
-    assert result["total_score"] == (40 if double else 20) - (2 if hint else 0) - (2 if swap else 0)
+    assert result["total_score"] == (35 if double else 20) - (2 if hint else 0) - (2 if swap else 0)
 
 
 def test_mixed_fields_identify_wrong_output_and_invalid_code_individually():
@@ -60,6 +60,25 @@ def test_mixed_fields_identify_wrong_output_and_invalid_code_individually():
     assert result["expected_output"]["status"] == result["correction"]["status"] == "incorrect"
     assert "cause" not in result and len(result) == 4
     assert result["correction"]["max_score"] == 11
+
+
+@pytest.mark.parametrize("perfect", [True, False])
+def test_double_commit_review_preserves_bonus_rule_and_individual_checks(perfect):
+    team_id, error = register_team("Double Commit review", "One", "Two")
+    assert error is None
+    assert arm_double_commit(team_id, "Q01")[0]
+    response = reference_answer(saved_question())
+    if not perfect:
+        response["expected_output"] = "wrong"
+    result, error = process_submission(team_id, "Q01", response)
+    assert error is None
+    for reviewed in (get_client_question(team_id, "Q01"), get_team_assigned_questions(team_id)[0]):
+        assert reviewed["double_commit_rule"] == "perfect-plus-15-v1"
+        assert reviewed["double_commit_bonus"] == (15 if perfect else 0)
+        assert reviewed["awarded_score"] == (35 if perfect else 0)
+        assert reviewed["max_score"] == 35
+        assert reviewed["field_results"] == result["field_results"]
+        assert fields_by_key(reviewed)["correction"]["status"] == "correct"
 
 
 def test_legacy_zero_final_score_does_not_hide_correct_component():

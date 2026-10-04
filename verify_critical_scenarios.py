@@ -135,12 +135,12 @@ def run_critical_scenario_checks():
     assert "Q02" not in active_ids
     print(f"[OK] PASS: Git Revert swapped Q02 for {new_qid}. Q02 marked abandoned and cannot return.")
 
-    # --- Scenario 7: Use Double Commit. Confirm fixed +15 and normal answer points. ---
-    print("\n[Scenario 7] Double Commit fixed bonus verification...")
+    # --- Scenario 7: Arm Double Commit. Award base +15 only after a perfect answer. ---
+    print("\n[Scenario 7] Double Commit conditional bonus verification...")
     ok_arm, msg_arm = arm_double_commit(tid_b, "Q01")
     assert ok_arm is True
     conn = get_db_connection()
-    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (tid_b,)).fetchone()[0] == 15
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (tid_b,)).fetchone()[0] == 0
     conn.close()
 
     sub_b = {
@@ -152,11 +152,23 @@ def run_critical_scenario_checks():
     res_b, err_b = process_submission(tid_b, "Q01", sub_b)
     assert err_b is None
     assert res_b["is_double_commit"] == 1
-    assert res_b["total_score"] == 20
+    assert res_b["raw_total"] == 20 and res_b["total_score"] == 35
+    assert res_b["double_commit_bonus"] == 15
+    assert res_b["powerup_adjustments"]["double_commit"] == 0
     conn = get_db_connection()
     assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (tid_b,)).fetchone()[0] == 35
     conn.close()
-    print("[OK] PASS: Double Commit added 15 immediately; the correct answer added its normal 20 points.")
+    assert arm_double_commit(tid_a, new_qid)[0]
+    conn = get_db_connection()
+    partial_question = dict(conn.execute("SELECT * FROM questions WHERE id = ?", (new_qid,)).fetchone())
+    conn.close()
+    partial_result, partial_error = process_submission(tid_a, new_qid, {
+        "error_location": partial_question["bug_location"], "error_type": partial_question["error_type"],
+        "expected_output": partial_question["expected_output"], "correction": "incorrect"
+    })
+    assert partial_error is None and partial_result["raw_total"] > 0
+    assert partial_result["total_score"] == partial_result["double_commit_bonus"] == 0
+    print("[OK] PASS: Arming awarded nothing; a perfect answer earned 20+15, while a partial answer earned zero.")
 
     # --- Scenario 8: Attempt to submit after timer reaches zero. Confirm submission is rejected. ---
     print("\n[Scenario 8] Reject submission after timer expiration...")

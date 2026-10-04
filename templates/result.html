@@ -19,7 +19,7 @@
       <li><details class="debugging-review-question" data-question-id="{{ question.id }}">
         <summary><span class="debugging-review-number">{{ '%02d'|format(question.question_order) }}</span><span class="debugging-review-title"><strong>{{ question.title }}</strong><small>{{ question.language }} · {{ question.id }}</small></span><span class="debugging-review-total">{{ '%g'|format(question.awarded_score) }} / {{ '%g'|format(question.max_score) }}<small>POINTS AWARDED</small></span></summary>
         <div class="debugging-review-detail">
-          <p class="debugging-review-note">Each part shows its automated points for this question. Fixed power-up changes are applied separately to your team score, once per tool. Organizer overrides affect the question award.</p>
+          <p class="debugging-review-note">{% if question.double_commit_rule == 'perfect-plus-15-v1' %}Each part shows its automated correctness before Double Commit. A 100% correct answer earns the question points plus 15; anything less earns 0 for the whole question.{% else %}Each part shows its automated points for this question.{% endif %} Hint and swap costs are applied separately to your team score, once per tool. Organizer overrides affect the question award.</p>
           <dl class="debugging-field-list">
           {% for field in question.field_results %}
             <div class="debugging-field" data-field="{{ field.key }}" data-answer-status="{{ field.status }}">
@@ -32,7 +32,7 @@
           <div class="debugging-review-modifiers" aria-label="Score adjustments">
             {% if question.hint_used %}<span>Hint used{% if question.powerup_adjustments.get('hint') %} · {{ '%+g'|format(question.powerup_adjustments.hint)|replace('-', '−') }} points already applied to team total{% elif question.penalties.get('hint') %} · −{{ '%g'|format(question.penalties.hint) }} points under original rules{% endif %}</span>{% endif %}
             {% if question.swap_used %}<span>Swap used{% if question.powerup_adjustments.get('swap') %} · {{ '%+g'|format(question.powerup_adjustments.swap)|replace('-', '−') }} points already applied to team total{% elif question.penalties.get('swap') %} · −{{ '%g'|format(question.penalties.swap) }} points under original rules{% endif %}</span>{% endif %}
-            {% if question.is_double_commit %}<span>Double Commit{% if question.powerup_adjustments.get('double_commit') %} · +15 points already applied to team total{% else %} applied under original rules{% endif %}</span>{% endif %}
+            {% if question.is_double_commit %}<span>Double Commit{% if question.double_commit_rule == 'perfect-plus-15-v1' %} · {{ '100% correct: +15 bonus included in the automated question award' if question.double_commit_bonus == 15 else 'Not 100% correct: automated question award is 0 points' }}{% elif question.powerup_adjustments.get('double_commit') %} · +15 points already applied to team total{% else %} applied under original rules{% endif %}</span>{% endif %}
             {% if question.score_overridden %}<span>Organizer adjusted the total; individual checks remain automated.</span>{% endif %}
           </div>
           {% endif %}

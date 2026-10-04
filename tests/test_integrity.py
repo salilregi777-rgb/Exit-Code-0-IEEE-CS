@@ -64,8 +64,9 @@ def test_duplicate_network_retry_preserves_double_commit_and_timestamp(client):
     second = client.post("/api/submit-bug-fix", json=payload).get_json()
     assert first["success"] and second == first
     assert first["result"]["is_double_commit"] == 1
-    assert first["result"]["total_score"] == 20
-    assert first["result"]["powerup_adjustments"]["double_commit"] == 15
+    assert first["result"]["total_score"] == 35
+    assert first["result"]["powerup_adjustments"]["double_commit"] == 0
+    assert first["result"]["double_commit_bonus"] == 15
     assert first["new_score"] == 35
     conn = get_db_connection()
     assert conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 1
