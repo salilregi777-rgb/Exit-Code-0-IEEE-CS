@@ -128,7 +128,11 @@ def test_rubber_duck():
     assert ok2 is False
     assert "already been used" in msg2.lower()
 
-    # 3. Verify 10% deduction applied upon submission
+    # The fixed cost is charged immediately, before an answer is submitted.
+    conn = get_db_connection()
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == -5
+    conn.close()
+    # 3. Submitting the answer must not deduct the hint cost again.
     sub = {
         "error_location": "Line 3",
         "error_type": "Logical Error",
@@ -139,8 +143,11 @@ def test_rubber_duck():
     res, err = process_submission(team_id, "Q01", sub)
     assert err is None
     assert res["hint_used"] == 1
-    # Deduction of 2 points (10% of 20)
-    assert res["total_score"] == pytest.approx(res["raw_total"] - 2.0, abs=0.1)
+    assert res["total_score"] == res["raw_total"] == 20
+    assert res["powerup_adjustments"]["hint"] == -5
+    conn = get_db_connection()
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == 15
+    conn.close()
 
 def test_git_revert():
     team_id, _ = register_team("RevertTeam", "Rev1", "Rev2")
@@ -167,11 +174,14 @@ def test_git_revert():
 def test_double_commit():
     team_id, _ = register_team("DoubleTeam", "Double1", "Double2")
 
-    # Arm Double Commit on Q01
+    # Double Commit adds a fixed team bonus immediately.
     ok, msg = arm_double_commit(team_id, "Q01")
     assert ok is True
+    conn = get_db_connection()
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == 15
+    conn.close()
 
-    # 1. Correct answer receives 2x points
+    # 1. A correct answer retains the ordinary question points.
     accurate_sub = {
         "error_location": "Line 3",
         "error_type": "Logical Error",
@@ -182,7 +192,11 @@ def test_double_commit():
     res, err = process_submission(team_id, "Q01", accurate_sub)
     assert err is None
     assert res["is_double_commit"] == 1
-    assert res["total_score"] >= 30.0  # 2x multiplier
+    assert res["total_score"] == 20
+    assert res["powerup_adjustments"]["double_commit"] == 15
+    conn = get_db_connection()
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == 35
+    conn.close()
 
     # Double commit is now consumed
     ok2, msg2 = arm_double_commit(team_id, "Q02")
@@ -310,7 +324,7 @@ def test_c_operator_token_boundaries_cannot_be_erased_by_whitespace():
     (False, False, False), (True, False, False), (False, True, False), (True, True, False),
     (False, False, True), (True, False, True), (False, True, True), (True, True, True),
 ])
-def test_modifiers_are_consistent_and_visible(hint, swap, double):
+def test_legacy_modifiers_are_consistent_and_visible(hint, swap, double):
     question = sample_question()
     result = evaluate_submission(question, reference_answer(question), double, hint, swap)
     assert result["raw_total"] == result["raw_score"] == 20
@@ -321,7 +335,7 @@ def test_modifiers_are_consistent_and_visible(hint, swap, double):
     assert result["answer_status"] == "correct"  # Penalties do not mark a correct answer wrong.
 
 
-def test_penalties_never_create_negative_points_or_a_double_commit_reward():
+def test_legacy_penalties_never_create_negative_question_points_or_a_double_commit_reward():
     question = sample_question()
     submission = {"error_type": "Logical Error"}
     result = evaluate_submission(question, submission, hint_used=True, swap_used=True)
@@ -404,14 +418,18 @@ def test_swap_penalty_is_persisted_on_replacement_and_hint_cannot_be_escaped(una
     first, error = process_submission(team_id, replacement, dict(reference_answer(question), request_id="replacement-submit"))
     assert error is None and first["swap_used"] == 1
     assert first["hint_used"] == int(hint_timing != "none")
-    expected = question["points"] * (0.8 if hint_timing != "none" else 0.9)
-    assert first["total_score"] == pytest.approx(expected)
+    expected = question["points"]
+    adjustment = -7 - (5 if hint_timing != "none" else 0)
+    assert first["total_score"] == expected
+    assert first["powerup_adjustments"]["swap"] == -7
+    assert first["powerup_adjustments"]["hint"] == (-5 if hint_timing != "none" else 0)
     retry, error = process_submission(team_id, replacement, {"request_id": "replacement-submit", "cause": "changed"})
     assert error is None and retry == first
     conn = get_db_connection()
     record = conn.execute("SELECT total_score, response_json FROM submissions WHERE team_id = ?", (team_id,)).fetchone()
     assert record["total_score"] == pytest.approx(expected)
     assert json.loads(record["response_json"])["penalties"] == first["penalties"]
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == expected + adjustment
     conn.close()
     next_question = assigned_question(team_id, 2)
     next_result, error = process_submission(team_id, next_question["id"], reference_answer(next_question))

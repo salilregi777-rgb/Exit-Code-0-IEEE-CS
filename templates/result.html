@@ -9,6 +9,7 @@
   <section class="card result-receipt" aria-labelledby="result-team-name"><div class="receipt-header"><div><span class="eyebrow">TEAM RECEIPT</span><h2 id="result-team-name">{{ team.name }}</h2><span class="mono muted">{{ team.id }}</span></div><span class="badge {{ 'badge-success' if results_published else '' }}">{{ 'RESULTS PUBLISHED' if results_published else 'AWAITING FINAL RESULTS' }}</span></div><div class="result-metrics"><div><span>Debugging score</span><strong>{{ score.score if score else 0 }}</strong><small>Official debugging points</small></div><div><span>Questions completed</span><strong>{{ score.completed_count if score else 0 }}<small> / {{ total_questions|default(0) }}</small></strong><small>Submitted challenges</small></div><div><span>Final rank</span><strong>{{ '#' ~ final_rank if final_rank else '—' }}</strong><small>{{ 'Verified by organizers' if results_published else 'Pending publication' }}</small></div></div><div class="result-quiz-score"><div><span class="quiz-small-icon" aria-hidden="true">↯</span><div><strong>Quiz score <span>{{ quiz_score|default(0) }} / {{ quiz_total|default(10) }}</span></strong><p>FUN ROUND — NOT INCLUDED IN RANKING</p></div></div>{% if event_state.event_status == 'COMPLETED' %}<a class="btn btn-primary btn-large rapid-fire-cta" href="/quiz">{{ 'View quiz' if quiz and quiz.started else 'Go to Rapid Fire' }} <span aria-hidden="true">→</span></a>{% endif %}</div></section>
   {% else %}<div class="card result-guest"><p>Sign in to view your team’s score and competition receipt.</p><a href="/register?tab=login" class="btn btn-secondary">Team login <span aria-hidden="true">→</span></a></div>{% endif %}
   {% if team and debug_review %}
+  {% if tool_adjustments %}<div class="debugging-review-modifiers" aria-label="Power-up changes included in team score"><strong>Power-up changes included in your team score:</strong>{% for tool in tool_adjustments %}<span>{{ {'RUBBER_DUCK': 'Hint', 'GIT_REVERT': 'Question change', 'DOUBLE_COMMIT': 'Double Commit'}[tool.powerup_type] }} · {{ '%+g'|format(tool.score_adjustment) }} points</span>{% endfor %}</div>{% endif %}
   <section class="card debugging-review" aria-labelledby="debugging-review-heading">
     <div class="participant-section-heading"><div><p class="eyebrow">YOUR LOCKED SUBMISSIONS</p><h2 id="debugging-review-heading">Review every part of your answers.</h2></div><span class="badge">{{ debug_review|length }} ANSWERED</span></div>
     <p class="debugging-review-intro">Open a question to see which parts were correct, partially correct, or incorrect. These are your submitted answers.</p>
@@ -18,7 +19,7 @@
       <li><details class="debugging-review-question" data-question-id="{{ question.id }}">
         <summary><span class="debugging-review-number">{{ '%02d'|format(question.question_order) }}</span><span class="debugging-review-title"><strong>{{ question.title }}</strong><small>{{ question.language }} · {{ question.id }}</small></span><span class="debugging-review-total">{{ '%g'|format(question.awarded_score) }} / {{ '%g'|format(question.max_score) }}<small>POINTS AWARDED</small></span></summary>
         <div class="debugging-review-detail">
-          <p class="debugging-review-note">Each part shows its automated points before hint or swap deductions, Double Commit, and organizer score adjustments.</p>
+          <p class="debugging-review-note">Each part shows its automated points for this question. Fixed power-up changes are applied separately to your team score, once per tool. Organizer overrides affect the question award.</p>
           <dl class="debugging-field-list">
           {% for field in question.field_results %}
             <div class="debugging-field" data-field="{{ field.key }}" data-answer-status="{{ field.status }}">
@@ -29,9 +30,9 @@
           </dl>
           {% if question.hint_used or question.swap_used or question.is_double_commit or question.score_overridden %}
           <div class="debugging-review-modifiers" aria-label="Score adjustments">
-            {% if question.hint_used %}<span>Hint used{% if question.penalties.get('hint') is not none %} · −{{ '%g'|format(question.penalties.hint) }} points{% endif %}</span>{% endif %}
-            {% if question.swap_used %}<span>Swap used{% if question.penalties.get('swap') is not none %} · −{{ '%g'|format(question.penalties.swap) }} points{% endif %}</span>{% endif %}
-            {% if question.is_double_commit %}<span>Double Commit applied</span>{% endif %}
+            {% if question.hint_used %}<span>Hint used{% if question.powerup_adjustments.get('hint') %} · {{ '%+g'|format(question.powerup_adjustments.hint)|replace('-', '−') }} points already applied to team total{% elif question.penalties.get('hint') %} · −{{ '%g'|format(question.penalties.hint) }} points under original rules{% endif %}</span>{% endif %}
+            {% if question.swap_used %}<span>Swap used{% if question.powerup_adjustments.get('swap') %} · {{ '%+g'|format(question.powerup_adjustments.swap)|replace('-', '−') }} points already applied to team total{% elif question.penalties.get('swap') %} · −{{ '%g'|format(question.penalties.swap) }} points under original rules{% endif %}</span>{% endif %}
+            {% if question.is_double_commit %}<span>Double Commit{% if question.powerup_adjustments.get('double_commit') %} · +15 points already applied to team total{% else %} applied under original rules{% endif %}</span>{% endif %}
             {% if question.score_overridden %}<span>Organizer adjusted the total; individual checks remain automated.</span>{% endif %}
           </div>
           {% endif %}

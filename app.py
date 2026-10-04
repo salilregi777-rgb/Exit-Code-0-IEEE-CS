@@ -8,14 +8,15 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response
 
 from config import Config
+from role_sessions import RoleSessionInterface
 from database import (
     init_db, get_db_connection, register_team,
     log_admin_action, get_team_assigned_questions, get_client_question,
-    record_activity, get_competition_controls
+    record_activity, get_competition_controls, recalculate_team_score, get_team_score
 )
 from scoring import (
     process_submission, activate_rubber_duck, activate_git_revert,
-    arm_double_commit
+    arm_double_commit, submission_score_limit
 )
 from event_manager import (
     get_event_state, start_event, pause_event, resume_event,
@@ -28,7 +29,9 @@ from quiz import quiz_snapshot, start_quiz, answer_quiz, QUESTIONS as QUIZ_QUEST
 
 app = Flask(__name__)
 app.config.update(SECRET_KEY=Config.SECRET_KEY, SESSION_COOKIE_HTTPONLY=True,
-                  SESSION_COOKIE_SAMESITE="Lax", MAX_CONTENT_LENGTH=64 * 1024)
+                  SESSION_COOKIE_SAMESITE="Lax", MAX_CONTENT_LENGTH=64 * 1024,
+                  ADMIN_SESSION_COOKIE_NAME="exitcode_admin_session")
+app.session_interface = RoleSessionInterface()
 
 # Initialize database schema and seeds
 init_db()
@@ -341,11 +344,13 @@ def result():
 
     team = None
     score = None
+    tool_adjustments = []
     if team_id:
         cur.execute("SELECT * FROM teams WHERE id = ?", (team_id,))
         team = cur.fetchone()
         cur.execute("SELECT * FROM scores WHERE team_id = ?", (team_id,))
         score = cur.fetchone()
+        tool_adjustments = cur.execute("SELECT powerup_type, score_adjustment FROM powerups WHERE team_id = ? AND score_adjustment != 0 ORDER BY id", (team_id,)).fetchall()
 
     # Calculate Top 3 Winners (Ranked by Score DESC, Completed Count DESC, Time ASC)
     cur.execute("""
@@ -374,7 +379,7 @@ def result():
     debug_review = [get_client_question(team_id, question["id"]) for question in assigned if question["is_answered"]]
     debug_review = [question for question in debug_review if question]
     return render_template("result.html", team=team, score=score, winners=winners if published else [],
-                           final_rank=final_rank, total_questions=total_questions, quiz=quiz, debug_review=debug_review,
+                           final_rank=final_rank, total_questions=total_questions, quiz=quiz, debug_review=debug_review, tool_adjustments=tool_adjustments,
                            quiz_score=quiz["quiz_score"], quiz_total=quiz["quiz_total"], results_published=published)
 
 # --- JSON API Endpoints ---
@@ -465,7 +470,7 @@ def api_powerup_rubber_duck():
     if not success:
         return jsonify({"success": False, "error": msg}), 400
 
-    return jsonify({"success": True, "message": msg, "hint": hint})
+    return jsonify({"success": True, "message": msg, "hint": hint, "new_score": get_team_score(team_id)})
 
 @app.route("/api/powerup/git-revert", methods=["POST"])
 @team_required
@@ -484,7 +489,7 @@ def api_powerup_git_revert():
     if not success:
         return jsonify({"success": False, "error": msg}), 400
 
-    return jsonify({"success": True, "message": msg, "new_question_id": new_qid})
+    return jsonify({"success": True, "message": msg, "new_question_id": new_qid, "new_score": get_team_score(team_id)})
 
 @app.route("/api/powerup/double-commit", methods=["POST"])
 @team_required
@@ -503,7 +508,7 @@ def api_powerup_double_commit():
     if not success:
         return jsonify({"success": False, "error": msg}), 400
 
-    return jsonify({"success": True, "message": msg})
+    return jsonify({"success": True, "message": msg, "new_score": get_team_score(team_id)})
 
 def _leaderboard_rows():
     conn = get_db_connection()
@@ -533,6 +538,18 @@ def api_leaderboard_data():
                    remaining_seconds=state["remaining_seconds"], results_published=published)
 
 # --- Admin Portal Routes & Actions ---
+
+@app.route("/api/admin/event-status")
+@admin_required
+def api_admin_event_status():
+    return api_event_status()
+
+
+@app.route("/api/admin/leaderboard-data")
+@admin_required
+def api_admin_leaderboard_data():
+    return api_leaderboard_data()
+
 
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
@@ -603,7 +620,7 @@ def admin_dashboard():
         ORDER BY s.id DESC
         LIMIT 50
     """)
-    submissions = cur.fetchall()
+    submissions = [{**dict(row), "max_score": submission_score_limit(row)} for row in cur.fetchall()]
 
     conn.close()
     return render_template(
@@ -661,13 +678,13 @@ def api_admin_override_score():
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("BEGIN IMMEDIATE")
-    cur.execute("SELECT s.team_id, s.is_double_commit, q.points FROM submissions s JOIN questions q ON q.id = s.question_id WHERE s.id = ?", (sub_id,))
+    cur.execute("SELECT s.team_id, s.is_double_commit, s.response_json, q.points FROM submissions s JOIN questions q ON q.id = s.question_id WHERE s.id = ?", (sub_id,))
     row = cur.fetchone()
     if not row:
         conn.close()
         return jsonify({"success": False, "error": "Submission not found."}), 404
 
-    if new_sc > row["points"] * (2 if row["is_double_commit"] else 1):
+    if new_sc > submission_score_limit(row):
         conn.close()
         return jsonify(success=False, error="Score exceeds the maximum available for this submission."), 400
     team_id = row["team_id"]
@@ -678,25 +695,7 @@ def api_admin_override_score():
         WHERE id = ?
     """, (new_sc, reason, sub_id))
 
-    # Recalculate team total score
-    cur.execute("""
-        SELECT COALESCE(SUM(max_score), 0) as total_debug, COUNT(DISTINCT question_id) as comp_count
-        FROM (
-            SELECT question_id, MAX(total_score) as max_score
-            FROM submissions
-            WHERE team_id = ? AND is_accepted = 1
-            GROUP BY question_id
-        )
-    """, (team_id,))
-    stats = cur.fetchone()
-    total_score = stats["total_debug"] or 0.0
-    comp_count = stats["comp_count"] or 0
-
-    cur.execute("""
-        UPDATE scores 
-        SET score = ?, completed_count = ?, last_updated = CURRENT_TIMESTAMP 
-        WHERE team_id = ?
-    """, (total_score, comp_count, team_id))
+    recalculate_team_score(cur, team_id)
 
     conn.commit()
     conn.close()

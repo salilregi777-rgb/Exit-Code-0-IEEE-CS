@@ -42,6 +42,14 @@
 .quiz-review-title { flex: 1; color: #eee5e9; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
 .quiz-review-verdict { flex-shrink: 0; font-size: 12px; }
 .quiz-review-selected { margin: 0 0 17px 28px; padding: 10px 14px; border-left: 2px solid #7b3447; color: #c1b6bd; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
+.quiz-review-options { list-style: none; display: grid; gap: 8px; margin: 0 0 20px 28px; padding: 0; }
+.quiz-review-options li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid #42343d; border-radius: 6px; color: #bfb5bb; font-size: 13px; line-height: 1.5; }
+.quiz-review-options li strong,.quiz-option-verdict { flex-shrink: 0; font-size: 11px; font-weight: 600; }
+.quiz-review-options .option-correct,#quiz-options .quiz-option.option-correct { background: #112d20; border: 2px solid #66d994; color: #a3f0bd; box-shadow: inset 3px 0 0 #66d994; }
+.quiz-review-options .option-incorrect,#quiz-options .quiz-option.option-incorrect { background: #36151e; border: 2px solid #ff6f86; color: #ffb0bd; box-shadow: inset 3px 0 0 #ff6f86; }
+#quiz-options .quiz-option:is(.option-correct,.option-incorrect) { opacity: 1; transform: none; }
+.quiz-option-verdict { margin-left: auto; }
+.quiz-options:disabled .quiz-option { cursor: default; }
 .quiz-feedback > .muted { font-size: 14px; line-height: 1.7; }
 .feedback-questions { display: grid; gap: 0; margin: 24px 0; }
 .feedback-rating { margin: 0; padding: 18px 0; min-width: 0; border: 0; border-bottom: 1px solid #382830; }
@@ -66,6 +74,10 @@
   .quiz-review-item summary { flex-wrap: wrap; gap: 8px; }
   .quiz-review-title { flex-basis: calc(100% - 35px); }
   .quiz-review-verdict { margin-left: 25px; }
+  .quiz-review-options { margin-left: 0; }
+  .quiz-review-options li { align-items: flex-start; flex-direction: column; gap: 4px; }
+  #quiz-options .quiz-option { flex-wrap: wrap; }
+  .quiz-option-verdict { width: 100%; margin-left: 30px; }
   .feedback-actions { flex-direction: column; align-items: stretch; }
 }
 @media (prefers-reduced-motion: reduce) { .feedback-scale span { transition: none; } }

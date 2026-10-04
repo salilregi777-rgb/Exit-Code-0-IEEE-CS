@@ -7,12 +7,12 @@ from database import get_db_connection, record_activity
 VIOLATION_LIMIT = 2
 DEPARTURE_EVENTS = {"fullscreen_exit", "window_blur", "tab_hidden"}
 FEEDBACK_QUESTIONS = [
-    {"id": "clarity", "prompt": "How clear were the quiz questions?"},
-    {"id": "difficulty", "prompt": "How suitable was the difficulty for your experience?"},
-    {"id": "interface", "prompt": "How easy was the quiz interface to use?"},
-    {"id": "pacing", "prompt": "How suitable was the time allowed for each question?"},
-    {"id": "enjoyment", "prompt": "How much did you enjoy the quiz?"},
-    {"id": "overall", "prompt": "How would you rate the quiz overall?"},
+    {"id": "clarity", "prompt": "How clear were the debugging tasks and Rapid Fire quiz questions?"},
+    {"id": "difficulty", "prompt": "How suitable was the difficulty of both debugging and the quiz for your experience?"},
+    {"id": "interface", "prompt": "How easy were the debugging arena, powerups, and quiz interface to use?"},
+    {"id": "pacing", "prompt": "How suitable were the 40-minute debugging round and 7-minute quiz timings?"},
+    {"id": "enjoyment", "prompt": "How much did you enjoy taking part in debugging and Rapid Fire?"},
+    {"id": "overall", "prompt": "How would you rate the whole event, from registration to results?"},
 ]
 
 

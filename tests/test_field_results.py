@@ -62,7 +62,7 @@ def test_mixed_fields_identify_wrong_output_and_invalid_code_individually():
     assert result["correction"]["max_score"] == 11
 
 
-def test_zero_final_score_does_not_hide_correct_component():
+def test_legacy_zero_final_score_does_not_hide_correct_component():
     evaluation = evaluate_submission(question(), {"error_type": "Logical Error"}, hint_used=True, swap_used=True)
     assert evaluation["total_score"] == 0
     assert fields_by_key(evaluation)["error_type"]["status"] == "correct"
@@ -169,7 +169,7 @@ def test_result_page_renders_own_individual_verdicts_without_reference_answers()
         assert "&lt;script&gt;badOutput()&lt;/script&gt;" in html
         assert "<script>badOutput()" not in html
         assert item["cause"] not in html and item["correction"] not in html
-        assert "automated points before hint or swap deductions" in html
+        assert "automated points" in html
         with client.session_transaction() as session:
             session.clear()
         assert 'data-question-id="Q01"' not in client.get("/result").get_data(as_text=True)
@@ -188,7 +188,7 @@ def test_result_review_distinguishes_organizer_total_from_individual_checks():
             session["team_id"] = team_id
         html = client.get("/result").get_data(as_text=True)
         assert "Organizer adjusted the total; individual checks remain automated." in html
-        assert "Hint used · −2 points" in html
+        assert "Hint" in html and "−5" in html
         assert 'data-field="correction" data-answer-status="incorrect"' in html
         assert 'data-field="cause"' not in html
         assert "POINTS AWARDED" in html

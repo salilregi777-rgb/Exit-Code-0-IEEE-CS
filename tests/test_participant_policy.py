@@ -20,7 +20,7 @@ def signal(client, kind, event_id=None):
 
 def open_quiz(client):
     end_event()
-    with client.session_transaction() as sess:
+    with client.session_transaction(path="/admin") as sess:
         sess['is_admin'] = True
     assert client.post('/api/admin/quiz-action', json={'action':'open'}).status_code == 200
     signal(client, 'fullscreen_enter')
@@ -87,7 +87,9 @@ def test_focus_departure_signals_deduplicate_and_admin_can_restore(client):
     signal(client,'fullscreen_enter')
     assert signal(client,'tab_hidden').get_json()['blocked']
     with client.session_transaction() as sess:
-        team_id=sess['team_id'];sess['is_admin']=True
+        team_id=sess['team_id']
+    with client.session_transaction(path="/admin") as sess:
+        sess['is_admin']=True
     assert client.post('/api/admin/toggle-team',json={'team_id':team_id}).status_code==200
     restored=client.get('/api/fullscreen/status').get_json()
     assert not restored['blocked'] and restored['violations']==0 and not restored['is_fullscreen']
@@ -122,7 +124,10 @@ def test_quiz_review_uses_locked_answers_and_feedback_is_validated_saved_once(cl
     final=complete_quiz(client)
     assert final['completed'] and len(final['answers'])==10
     assert final['answers'][0]['status']=='incorrect' and final['answers'][1]['status']=='correct'
-    assert not any({'key','correct_answer','answer_key','correct_index'} & set(row) for row in final['answers'])
+    for row, (_, _, options, key) in zip(final['answers'], QUESTIONS):
+        assert row['correct_index'] == key and row['correct_answer'] == options[key]
+        assert row['options'] == options
+    assert final['answers'][0]['selected_index'] != final['answers'][0]['correct_index']
     retry=client.post('/api/quiz/answer',json={'question_id':'R01','answer_index':QUESTIONS[0][3]}).get_json()['quiz']
     assert retry['quiz_score']==9 and retry['answers'][0]['status']=='incorrect'
     for invalid in [{}, {**ratings,'clarity':0}, {**ratings,'clarity':6}, {**ratings,'clarity':True}, {**ratings,'clarity':2.5}]:
@@ -143,6 +148,35 @@ def test_quiz_close_records_all_remaining_as_unanswered(client):
     quiz=client.get('/api/quiz/status').get_json()['quiz']
     assert quiz['completed'] and len(quiz['answers'])==10
     assert sum(a['status']=='unanswered' for a in quiz['answers'])==9
+    assert all(a['correct_answer'] == a['options'][a['correct_index']] for a in quiz['answers'])
+
+
+def test_quiz_correct_options_are_revealed_only_after_own_attempt_locks(client):
+    other_id, error = register_team('Other quiz team', 'Three', 'Four')
+    assert error is None
+    open_quiz(client)
+    initial = client.get('/api/quiz/status').get_json()['quiz']
+    assert initial['answers'] == []
+    assert set(initial['current_question']) == {'id', 'prompt', 'options', 'number'}
+    qid, _, options, key = QUESTIONS[0]
+    submitted = client.post('/api/quiz/answer', json={'question_id': qid, 'answer_index': (key + 1) % 4}).get_json()['quiz']
+    assert len(submitted['answers']) == 1
+    assert submitted['answers'][0]['correct_answer'] == options[key]
+    assert submitted['answers'][0]['status'] == 'incorrect'
+    assert set(submitted['current_question']) == {'id', 'prompt', 'options', 'number'}
+    assert client.get('/api/quiz/status').get_json()['quiz']['answers'] == submitted['answers']
+    # A different team's status cannot include this team's locked answers.
+    from quiz import quiz_snapshot
+    other = quiz_snapshot(other_id)
+    assert other['answers'] == [] and other['current_question'] is None
+
+
+def test_six_feedback_prompts_cover_debugging_quiz_and_whole_event():
+    assert len(FEEDBACK_QUESTIONS) == 6
+    assert [q['id'] for q in FEEDBACK_QUESTIONS] == ['clarity', 'difficulty', 'interface', 'pacing', 'enjoyment', 'overall']
+    assert all('debugging' in q['prompt'].lower() for q in FEEDBACK_QUESTIONS[:5])
+    assert all('quiz' in q['prompt'].lower() or 'rapid fire' in q['prompt'].lower() for q in FEEDBACK_QUESTIONS[:5])
+    assert 'whole event' in FEEDBACK_QUESTIONS[-1]['prompt']
 
 
 def test_old_entry_and_released_entry_cannot_reactivate_access(client):

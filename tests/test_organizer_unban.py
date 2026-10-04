@@ -18,7 +18,7 @@ def team_clients():
     }).status_code == 302
     with participant.session_transaction() as sess:
         team_id = sess['team_id']
-    with organizer.session_transaction() as sess:
+    with organizer.session_transaction(path="/admin") as sess:
         sess['is_admin'] = True
     start_event()
     return participant, organizer, team_id

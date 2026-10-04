@@ -17,7 +17,7 @@ def client():
 
 def test_feedback_export_requires_organizer_and_empty_export_has_header(client):
     assert client.get("/admin/export/feedback.csv").status_code == 302
-    with client.session_transaction() as session:
+    with client.session_transaction(path='/admin') as session:
         session["is_admin"] = True
     response = client.get("/admin/export/feedback.csv")
     assert response.status_code == 200
@@ -42,7 +42,7 @@ def test_feedback_export_preserves_all_ratings_notes_and_blocked_teams(client):
     conn.execute("UPDATE teams SET is_active = 0 WHERE id = ?", (team_id,))
     conn.commit()
     conn.close()
-    with client.session_transaction() as session:
+    with client.session_transaction(path='/admin') as session:
         session["is_admin"] = True
     response = client.get("/admin/export/feedback.csv")
     assert response.status_code == 200

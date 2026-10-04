@@ -4,7 +4,7 @@
   const {setInterval, setTimeout} = page;
   'use strict';
   const fields = ['error_location', 'error_type', 'expected_output', 'correction'];
-  let root, form, qid, progress, generation, draftKey, dirty = false, busy = false, switching = false, submitted = false, requestID = null, reviews = {}, saveTimeout, syncPending = false, loadSerial = 0;
+  let root, form, qid, progress, generation, draftKey, dirty = false, busy = false, switching = false, submitted = false, requestID = null, reviews = {}, saveTimeout, syncPending = null, progressEpoch = 0, loadSerial = 0;
   const byId = id => document.getElementById(id);
   const navigate = url => window.ParticipantGuard ? window.ParticipantGuard.navigate(url, { replace: true }) : location.replace(url);
   const canSubmit = () => App.eventState?.event_status === 'LIVE' && Number(App.eventState.remaining_seconds) > 0;
@@ -48,9 +48,13 @@
     summary.textContent = `${statusLabel(verdict)} · ${earned} / ${maximum} pts`;
     const description = document.createElement('span');
     const modifiers = [];
-    if (result?.hint_used) modifiers.push('hint: −10% base points');
-    if (result?.swap_used) modifiers.push('swap: −10% base points');
-    if (result?.is_double_commit) modifiers.push('Double Commit applied');
+    for (const [key, label, used] of [['hint', 'Hint', result?.hint_used], ['swap', 'Swap', result?.swap_used], ['double_commit', 'Double Commit', result?.is_double_commit]]) {
+      if (!used) continue;
+      const adjustment = Number(result?.powerup_adjustments?.[key] || 0);
+      if (adjustment) modifiers.push(`${label}: ${adjustment > 0 ? '+' : '−'}${Math.abs(adjustment)} already applied to team total`);
+      else if (key !== 'double_commit' && result?.penalties?.[key]) modifiers.push(`${label}: −${result.penalties[key]} under the original scoring rules`);
+      else modifiers.push(`${label} used under the original scoring rules`);
+    }
     description.textContent = `This answer is final.${modifiers.length ? ' ' + modifiers.join(' · ') + '.' : ''}`;
     status.replaceChildren(summary, description);
     if (Array.isArray(result?.field_results)) {
@@ -66,7 +70,7 @@
         item.append(label, outcome); breakdown.append(item);
       }
       const note = document.createElement('span'); note.className = 'answer-breakdown-note';
-      note.textContent = 'Automated field scores before hints, swaps and Double Commit. Organizer overrides change the total only.';
+      note.textContent = 'These are question points. Fixed power-up changes are applied separately to your team total, once per tool. Organizer overrides change the question total only.';
       if (result.score_overridden) note.textContent += ' Your total includes an organizer adjustment.';
       status.append(heading, breakdown, note);
     }
@@ -112,8 +116,9 @@
       const pu = progress?.powerups?.[key];
       button.disabled = disabled || !!pu?.is_used || !!pu?.is_armed;
       const label = button.querySelector('[data-powerup-status]');
-      const descriptions = { 'rubber-duck': 'Get a hint · −10% base points', 'git-revert': 'Replace challenge · −10% base points', 'double-commit': 'Double points or zero' };
-      label.textContent = pu?.is_used ? 'Used' : pu?.is_armed ? 'Armed for next submission' : descriptions[button.dataset.powerup];
+      const descriptions = { 'rubber-duck': 'Get a hint · −5 points now', 'git-revert': 'Replace challenge · −7 points now', 'double-commit': 'Add +15 points now' };
+      const applied = Number(pu?.score_adjustment || 0);
+      label.textContent = pu?.is_used ? `Used${applied ? ` · ${applied > 0 ? '+' : '−'}${Math.abs(applied)} points applied` : ''}` : pu?.is_armed ? 'Armed under original rules' : descriptions[button.dataset.powerup];
       if (button.dataset.powerup === 'git-revert' && current()?.is_completed) button.disabled = true;
     });
     fields.forEach(name => { byId(name).disabled = busy || switching || locked || !progress; });
@@ -142,14 +147,22 @@
     const scroll = list.scrollTop; list.replaceChildren(fragment); list.scrollTop = scroll; updateReview(); renderAnswerStatus(); updateControls();
   }
   async function syncProgress() {
-    if (syncPending) return;
-    syncPending = true;
-    try {
-      const data = await page.request('/api/team-progress');
-      if (generation && data.generation !== generation) { navigate('/register'); return; }
-      generation = data.generation; renderProgress(data); return data;
-    } catch (err) { if (err.status === 401 || err.status === 403) { byId('arena-state-notice').hidden = false; byId('arena-state-notice').textContent = err.message; progress = null; updateControls(); } }
-    finally { syncPending = false; }
+    if (syncPending) return syncPending;
+    syncPending = (async () => {
+      try {
+        while (page.active) {
+          const epoch = progressEpoch;
+          const data = await page.request('/api/team-progress');
+          // A poll started before a tool/submission must not overwrite the
+          // newly confirmed total. Fetch the current state before rendering.
+          if (epoch !== progressEpoch) continue;
+          if (generation && data.generation !== generation) { navigate('/register'); return; }
+          generation = data.generation; renderProgress(data); return data;
+        }
+      } catch (err) { if (err.status === 401 || err.status === 403) { byId('arena-state-notice').hidden = false; byId('arena-state-notice').textContent = err.message; progress = null; updateControls(); } }
+      finally { syncPending = null; }
+    })();
+    return syncPending;
   }
   async function selectQuestion(id, push = true) {
     if (!id || busy || switching || id === qid) return;
@@ -194,6 +207,7 @@
     const activity = App.activity(byId('submission-trace'), 'Waiting for server validation…');
     try {
       const data = await page.request('/api/submit-bug-fix', { method: 'POST', body: { question_id: qid, request_id: requestID, ...value() } });
+      progressEpoch++;
       activity.finish(true, 'Submission recorded');
       submitted = true; dirty = false; App.storage.remove(draftKey); requestID = null;
       const result = { ...data.result, is_answered: true, is_completed: true, awarded_score: data.result.total_score };
@@ -218,12 +232,19 @@
   async function usePowerup(button) {
     if (busy || isAnswered() || !canSubmit()) return;
     const type = button.dataset.powerup;
-    const descriptions = { 'rubber-duck': ['Use Rubber Duck?', 'Reveal one hint. This deducts 10% of the base points from this challenge’s scored submission.'], 'git-revert': ['Replace this challenge?', 'Git Revert replaces this challenge permanently. The replacement has a 10% base-point penalty. Any hint penalty carries over. You can use it once.'], 'double-commit': ['Arm Double Commit?', 'Your next submission scores 2× if it earns at least 60% accuracy; otherwise it scores zero. You can use this once.'] };
+    const descriptions = { 'rubber-duck': ['Use Rubber Duck?', 'Reveal one hint and deduct 5 points from your team total immediately. One use per team.'], 'git-revert': ['Replace this challenge?', 'Replace this challenge permanently and deduct 7 points from your team total immediately. One use per team.'], 'double-commit': ['Use Double Commit?', 'Add 15 points to your team total immediately. Your answer will earn its normal question points. One use per team.'] };
     if (!await App.confirm(descriptions[type][1], { title: descriptions[type][0], confirmText: 'Activate' })) return;
     if (!page.active) return;
     busy = true; updateControls(); button.classList.add('loading');
     try {
       const data = await page.request(`/api/powerup/${type}`, { method: 'POST', body: { question_id: qid } });
+      progressEpoch++;
+      if (Number.isFinite(data.new_score)) {
+        byId('arena-team-score').textContent = data.new_score;
+        byId('arena-team-score').classList.remove('score-changed');
+        void byId('arena-team-score').offsetWidth;
+        byId('arena-team-score').classList.add('score-changed');
+      }
       App.toast(data.message, 'success');
       if (data.hint) { byId('rubber-duck-hint-box').textContent = data.hint; byId('rubber-duck-hint-box').hidden = false; }
       await syncProgress();

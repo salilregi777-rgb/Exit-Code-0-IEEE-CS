@@ -13,7 +13,7 @@
     submissions: ['Submissions', 'Every fix, accounted for', 'Inspect answers, review scoring and record judging decisions.'],
     rankings: ['Leaderboard', 'The official standings', 'Review debugging scores and publish the final results.'],
     quiz: ['Quiz', 'Keep the room thinking', 'A separate rapid-fire round while judges verify the results.'],
-    feedback: ['Feedback', 'Hear from participants', 'Six quiz ratings and optional notes, saved per team.'],
+    feedback: ['Feedback', 'Hear from participants', 'Six ratings covering debugging, Rapid Fire, and the whole event, saved per team.'],
     security: ['Security', 'A clearer view of activity', 'Browser activity signals for informed organizer review.'],
     settings: ['Settings', 'Event settings', 'Competition configuration, exports and data management.']
   };
@@ -246,7 +246,7 @@
   }
   async function refreshLeaderboard() {
     try {
-      const data = await request('/api/leaderboard-data');
+      const data = await request('/api/admin/leaderboard-data');
       const teams = data.leaderboard || [];
       const signature = JSON.stringify(teams);
       if (signature === leaderboardSignature) return;

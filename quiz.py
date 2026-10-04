@@ -1,9 +1,9 @@
-"""Server-only rapid-fire quiz. Never shares answer keys with participant clients."""
+"""Server-scored rapid fire; reveal answers only after that team's attempt locks."""
 from datetime import datetime, timedelta, timezone
 from database import get_db_connection
 
 QUIZ_MINUTES = 7
-# Kept out of static assets and participant HTML/JSON.
+# Unanswered question keys stay out of static assets and participant HTML/JSON.
 QUESTIONS = [
     ('R01', 'In Python, what does print(7 // 2) display?', ['3.5', '3', '4', '2'], 1),
     ('R02', 'In C, what is printed by printf("%d", 7 % 3)?', ['2', '3', '1', '0'], 2),
@@ -62,11 +62,13 @@ def _snapshot(cur, team_id, now):
         question_remaining = max(0, min(remaining, int((_parse(session["question_started_at"]) + timedelta(seconds=QUESTION_SECONDS) - now).total_seconds())))
     saved = {row["question_id"]: row for row in cur.execute("SELECT question_id, answer_index, points FROM quiz_answers WHERE team_id = ?", (team_id,))}
     review = []
-    for number, (qid, prompt, options, _) in enumerate(QUESTIONS, 1):
+    for number, (qid, prompt, options, correct_index) in enumerate(QUESTIONS, 1):
         if qid in saved:
             answer = saved[qid]
             review.append({"question_id": qid, "number": number, "prompt": prompt,
                            "selected_answer": options[answer["answer_index"]] if answer["answer_index"] is not None else None,
+                           "selected_index": answer["answer_index"], "options": options,
+                           "correct_index": correct_index, "correct_answer": options[correct_index],
                            "status": "unanswered" if answer["answer_index"] is None else "correct" if answer["points"] else "incorrect",
                            "points": answer["points"]})
     return {"status": status, "started": session is not None, "completed": completed, "answers": review,

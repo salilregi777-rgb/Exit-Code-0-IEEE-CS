@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from rapidfuzz import fuzz
 from answer_feedback import answer_field_results
-from database import get_db_connection, unlock_next_question, record_activity
+from database import get_db_connection, unlock_next_question, record_activity, recalculate_team_score
 
 def normalize_text(text):
     if not text:
@@ -21,9 +21,12 @@ def extract_line_numbers(text):
     matches = re.findall(r'(?:line\s*|l)?(\d+)', str(text).lower())
     return [int(m) for m in matches if m.isdigit()]
 
-# Existing Rubber Duck rule is retained; replacements have the same base-point cost.
+# Percentage rules remain only for pending tools activated before the update.
 HINT_PENALTY_RATE = 0.10
 SWAP_PENALTY_RATE = 0.10
+HINT_COST = 5
+SWAP_COST = 7
+DOUBLE_COMMIT_BONUS = 15
 SCORING_VERSION = "single-line-v1"
 _C_TOKEN = re.compile(r'''(?:u8|u|U|L)?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|[A-Za-z_][A-Za-z_0-9]*|(?:0[xX][0-9A-Fa-f]+(?:\.[0-9A-Fa-f]*)?(?:[pP][+-]?\d+)?|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)[uUlLfF]*|>>=|<<=|\.\.\.|->|\+\+|--|<<|>>|<=|>=|==|!=|&&|\|\||\+=|-=|\*=|/=|%=|&=|\^=|\|=|##|[{}\[\]();:?~!%^&*+=|<>.,/#-]''')
 
@@ -91,7 +94,7 @@ def correction_matches(question, response):
 
 
 def evaluate_submission(question, user_submission, is_double_commit=False, hint_used=False, swap_used=False):
-    """Score once: 25% identification, 20% output, 55% corrected code line.
+    """Grade fields with legacy modifiers only for pre-update power-up uses.
 
     Root-cause prose is not scored. The correction must be one valid code line.
     Double Commit applies to the raw score first; hint and swap then each deduct
@@ -167,6 +170,18 @@ def evaluate_submission(question, user_submission, is_double_commit=False, hint_
     result["field_results"] = answer_field_results(result, base_points)
     return result
 
+def submission_score_limit(row):
+    """Judge the saved question award separately from team-level tool changes."""
+    row = dict(row)
+    try:
+        saved = json.loads(row.get("response_json") or "{}")
+        if isinstance(saved, dict) and isinstance(saved.get("max_score"), (int, float)):
+            return saved["max_score"]
+    except (TypeError, ValueError):
+        pass
+    return row.get("points", 20) * (2 if row.get("is_double_commit") else 1)
+
+
 def _live_error(cur):
     state = cur.execute("SELECT event_status, is_paused, event_end_time FROM event_state WHERE id = 1").fetchone()
     if not state or state["event_status"] != "LIVE" or state["is_paused"]:
@@ -227,10 +242,12 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
         if not assignment:
             return None, "This question is not currently assigned to your team."
 
-        # Check if Double Commit is armed
+        # New tools adjust the team total at activation. Existing pending uses
+        # without an adjustment retain their original rules until submitted.
         cur.execute("""
             SELECT * FROM powerups
-            WHERE team_id = ? AND powerup_type = 'DOUBLE_COMMIT' AND is_armed = 1 AND target_question_id = ?
+            WHERE team_id = ? AND powerup_type = 'DOUBLE_COMMIT'
+              AND (is_armed = 1 OR is_used = 1) AND target_question_id = ?
         """, (team_id, question_id))
         double_armed = cur.fetchone()
         is_double = bool(double_armed)
@@ -239,21 +256,29 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
         # This uses the recorded abandoned assignment, including the locked-question
         # fallback, so refreshes and retries cannot lose either modifier.
         swapped = cur.execute("""
-            SELECT old.question_id FROM question_assignments old
+            SELECT old.question_id, p.score_adjustment FROM question_assignments old
             JOIN powerups p ON p.team_id = old.team_id AND p.target_question_id = old.question_id
             WHERE old.team_id = ? AND old.question_order = ? AND old.is_abandoned = 1
               AND p.powerup_type = 'GIT_REVERT' AND p.is_used = 1
         """, (team_id, assignment["question_order"])).fetchone()
         source_qid = swapped["question_id"] if swapped else question_id
-        is_hint = cur.execute("""
-            SELECT 1 FROM powerups WHERE team_id = ? AND powerup_type = 'RUBBER_DUCK'
+        hint = cur.execute("""
+            SELECT score_adjustment FROM powerups WHERE team_id = ? AND powerup_type = 'RUBBER_DUCK'
               AND is_used = 1 AND target_question_id IN (?, ?)
-        """, (team_id, question_id, source_qid)).fetchone() is not None
+        """, (team_id, question_id, source_qid)).fetchone()
 
         eval_result = evaluate_submission(
-            dict(question), submission_data, is_double_commit=is_double,
-            hint_used=is_hint, swap_used=bool(swapped)
+            dict(question), submission_data,
+            is_double_commit=is_double and double_armed["score_adjustment"] == 0,
+            hint_used=bool(hint) and hint["score_adjustment"] == 0,
+            swap_used=bool(swapped) and swapped["score_adjustment"] == 0
         )
+        eval_result.update(hint_used=int(bool(hint)), swap_used=int(bool(swapped)), is_double_commit=int(is_double))
+        eval_result["powerup_adjustments"] = {
+            "hint": hint["score_adjustment"] if hint else 0,
+            "swap": swapped["score_adjustment"] if swapped else 0,
+            "double_commit": double_armed["score_adjustment"] if double_armed else 0,
+        }
         # Keep completed reviews tied to the exact public prompt answered, even
         # when organisers update the question bank later.
         from database import PUBLIC_QUESTION_FIELDS
@@ -301,26 +326,7 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
                 WHERE team_id = ? AND powerup_type = 'DOUBLE_COMMIT'
             """, (team_id,))
 
-        # Update Team's Total Score & Completed Count in scores table
-        cur.execute("""
-            SELECT COALESCE(SUM(max_score), 0) as total_debug, COUNT(DISTINCT question_id) as comp_count
-            FROM (
-                SELECT question_id, MAX(total_score) as max_score
-                FROM submissions
-                WHERE team_id = ? AND is_accepted = 1
-                GROUP BY question_id
-            )
-        """, (team_id,))
-        stats = cur.fetchone()
-        total_score = stats["total_debug"] or 0.0
-        comp_count = stats["comp_count"] or 0
-
-        cur.execute("""
-            UPDATE scores
-            SET last_submission_time = CASE WHEN ? > score OR ? > completed_count THEN CURRENT_TIMESTAMP ELSE last_submission_time END,
-                score = ?, completed_count = ?, last_updated = CURRENT_TIMESTAMP
-            WHERE team_id = ?
-        """, (total_score, comp_count, total_score, comp_count, team_id))
+        recalculate_team_score(cur, team_id, submission=True)
 
         record_activity(team_id, "submission", question_id, cur)
         conn.commit()
@@ -357,11 +363,12 @@ def activate_rubber_duck(team_id, question_id, enforce_live=False):
 
         cur.execute("""
             UPDATE powerups
-            SET is_used = 1, used_at = CURRENT_TIMESTAMP, target_question_id = ?
+            SET is_used = 1, used_at = CURRENT_TIMESTAMP, target_question_id = ?, score_adjustment = ?
             WHERE team_id = ? AND powerup_type = 'RUBBER_DUCK'
-        """, (question_id, team_id))
+        """, (question_id, -HINT_COST, team_id))
+        recalculate_team_score(cur, team_id)
         conn.commit()
-        return True, "Rubber Duck activated (-10% points penalty).", hint
+        return True, "Hint revealed. 5 points deducted from your team score.", hint
     except Exception as e:
         conn.rollback()
         return False, "Power-up could not be saved. Please try again.", None
@@ -456,12 +463,13 @@ def activate_git_revert(team_id, question_id, enforce_live=False):
         # Mark powerup used
         cur.execute("""
             UPDATE powerups
-            SET is_used = 1, used_at = CURRENT_TIMESTAMP, target_question_id = ?
+            SET is_used = 1, used_at = CURRENT_TIMESTAMP, target_question_id = ?, score_adjustment = ?
             WHERE team_id = ? AND powerup_type = 'GIT_REVERT'
-        """, (question_id, team_id))
+        """, (question_id, -SWAP_COST, team_id))
 
+        recalculate_team_score(cur, team_id)
         conn.commit()
-        return True, "Git Revert successful! Replacement carries a 10% base-point deduction; any hint deduction also carries over.", new_qid
+        return True, "Question changed. 7 points deducted from your team score.", new_qid
     except Exception as e:
         conn.rollback()
         return False, "Power-up could not be saved. Please try again.", None
@@ -469,7 +477,7 @@ def activate_git_revert(team_id, question_id, enforce_live=False):
         conn.close()
 
 def arm_double_commit(team_id, question_id, enforce_live=False):
-    """Arms Double Commit (2x points or 0) for next submission on question."""
+    """Apply the team's one-time +15 Double Commit bonus immediately."""
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -482,7 +490,7 @@ def arm_double_commit(team_id, question_id, enforce_live=False):
         row = cur.fetchone()
         if not row:
             return False, "Power-up not found."
-        if row["is_used"]:
+        if row["is_used"] or row["is_armed"]:
             return False, "Double Commit has already been used by your team."
 
         if not _assignment_allowed(cur, team_id, question_id):
@@ -490,11 +498,13 @@ def arm_double_commit(team_id, question_id, enforce_live=False):
 
         cur.execute("""
             UPDATE powerups
-            SET is_armed = 1, target_question_id = ?
+            SET is_used = 1, is_armed = 0, used_at = CURRENT_TIMESTAMP,
+                target_question_id = ?, score_adjustment = ?
             WHERE team_id = ? AND powerup_type = 'DOUBLE_COMMIT'
-        """, (question_id, team_id))
+        """, (question_id, DOUBLE_COMMIT_BONUS, team_id))
+        recalculate_team_score(cur, team_id)
         conn.commit()
-        return True, "Double Commit armed! Your next submission will score 2x points if accurate, or 0 if incorrect."
+        return True, "Double Commit used. 15 points added to your team score."
     except Exception as e:
         conn.rollback()
         return False, "Power-up could not be saved. Please try again."

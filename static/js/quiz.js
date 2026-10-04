@@ -1,4 +1,4 @@
-/* Quiz results and feedback are persisted by the server; answer keys stay private. */
+/* The server reveals correct options only for this team's locked answers. */
 (() => {
   const page = App.page;
   const {setInterval, setTimeout} = page;
@@ -17,17 +17,33 @@
     const last = answers[answers.length - 1];
     byId('quiz-latest-result').textContent = last ? `Question ${last.number}: ${labels[last.status] || 'Answer locked'}.` : '';
     byId('quiz-latest-result').className = `quiz-latest-result status-${last?.status || 'unanswered'}`;
+    const expanded = new Map([...byId('quiz-answer-review').querySelectorAll('[data-question-id]')].map(item => [item.dataset.questionId, item.querySelector('details').open]));
     const fragment = document.createDocumentFragment();
     answers.forEach(answer => {
       const item = document.createElement('li'); item.className = `quiz-review-item answer-${answer.status}`;
-      const detail = document.createElement('details');
+      item.dataset.questionId = answer.question_id;
+      const detail = document.createElement('details'); detail.open = expanded.has(answer.question_id) ? expanded.get(answer.question_id) : answer === last;
       const summary = document.createElement('summary');
       const number = document.createElement('span'); number.className = 'quiz-review-number'; number.textContent = String(answer.number).padStart(2, '0');
       const title = document.createElement('span'); title.className = 'quiz-review-title'; title.textContent = answer.prompt;
       const result = document.createElement('span'); result.className = `quiz-review-verdict status-${answer.status}`; result.textContent = labels[answer.status] || 'Locked';
       summary.append(number, title, result);
       const selected = document.createElement('p'); selected.className = 'quiz-review-selected'; selected.textContent = answer.selected_answer == null ? 'No answer was submitted before this question closed.' : `Your answer: ${answer.selected_answer}`;
-      detail.append(summary, selected); item.append(detail); fragment.append(item);
+      const options = document.createElement('ol'); options.className = 'quiz-review-options';
+      (answer.options || []).forEach((text, index) => {
+        const option = document.createElement('li');
+        const correct = index === answer.correct_index, chosen = index === answer.selected_index;
+        option.className = correct ? 'option-correct' : chosen ? 'option-incorrect' : '';
+        const value = document.createElement('span'); value.textContent = `${String.fromCharCode(65 + index)}. ${text}`;
+        option.append(value);
+        if (correct || chosen) {
+          const verdict = document.createElement('strong');
+          verdict.textContent = correct ? chosen ? '✓ Your answer · Correct' : '✓ Correct answer' : '✕ Your answer';
+          option.append(verdict);
+        }
+        options.append(option);
+      });
+      detail.append(summary, selected, options); item.append(detail); fragment.append(item);
     });
     byId('quiz-answer-review').replaceChildren(fragment);
   }
@@ -39,8 +55,8 @@
     show('quiz-results-link', canViewResults);
     show('quiz-feedback-results', feedbackSubmitted);
     const finishAction = byId('quiz-finish-action');
-    finishAction.href = canViewResults ? '/result' : '#quiz-feedback';
-    finishAction.textContent = canViewResults ? 'View debugging results →' : 'Feedback form →';
+    finishAction.href = canViewResults ? '/leaderboard' : '#quiz-feedback';
+    finishAction.textContent = canViewResults ? 'View debugging leaderboard →' : 'Feedback form →';
     show('quiz-feedback', eligible);
     if (!eligible) return;
     const questions = snapshot.feedback_questions || [];
@@ -77,8 +93,8 @@
     feedbackControls();
   }
 
-  function render(data) {
-    snapshot = data.quiz; receivedAt = performance.now();
+  function render(data, responseReceivedAt = performance.now()) {
+    snapshot = data.quiz; receivedAt = responseReceivedAt;
     const q = snapshot.current_question;
     show('quiz-error', false);
     show('quiz-intro', !snapshot.started && snapshot.status !== 'CLOSED');
@@ -105,6 +121,7 @@
           label.append(radio, letter, content); options.append(label);
         });
         byId('quiz-answer-hint').textContent = 'Choose carefully. Your answer is final once locked.';
+        byId('quiz-answer-hint').className = 'muted';
         byId('quiz-question').focus({ preventScroll: true });
       }
     }
@@ -141,8 +158,28 @@
     if (busy) return;
     busy = true; requestEpoch++; controls();
     try {
-      render(await page.request(url, { method: 'POST', body }));
-      const answer = snapshot.answers?.find(item => item.question_id === body.question_id);
+      const data = await page.request(url, { method: 'POST', body });
+      const responseReceivedAt = performance.now();
+      const answer = data.quiz.answers?.find(item => item.question_id === body.question_id);
+      if (answer && currentID === answer.question_id) {
+        // Keep the submitted options visible briefly before moving on. The next
+        // question's server deadline continues running during this feedback.
+        byId('quiz-options').querySelectorAll('.quiz-option').forEach((option, index) => {
+          const correct = index === answer.correct_index, wrong = index === answer.selected_index && !correct;
+          option.classList.toggle('option-correct', correct);
+          option.classList.toggle('option-incorrect', wrong);
+          if (correct || wrong) {
+            const verdict = document.createElement('strong'); verdict.className = 'quiz-option-verdict';
+            verdict.textContent = correct ? '✓ Correct answer' : '✕ Your answer';
+            option.append(verdict);
+          }
+        });
+        byId('quiz-answer-hint').textContent = `${labels[answer.status]}. Correct answer: ${answer.correct_answer}`;
+        byId('quiz-answer-hint').className = `status-${answer.status}`;
+        renderReview(data.quiz.answers);
+        await new Promise(resolve => setTimeout(resolve, 1400));
+      }
+      render(data, responseReceivedAt);
       App.toast(answer ? `Answer locked. ${labels[answer.status] || ''}` : url.endsWith('answer') ? 'Answer locked.' : 'Quiz started.', answer?.status === 'incorrect' ? 'warning' : 'success');
     } catch (err) { byId('quiz-error').textContent = err.message; show('quiz-error', true); }
     finally { busy = false; controls(); }

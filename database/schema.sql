@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS powerups (
     used_at TEXT,
     target_question_id TEXT,
     is_armed INTEGER DEFAULT 0,
+    score_adjustment REAL NOT NULL DEFAULT 0,
     FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
     UNIQUE(team_id, powerup_type)
 );

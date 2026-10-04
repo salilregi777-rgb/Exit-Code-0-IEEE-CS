@@ -1,0 +1,54 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const bank=require('../data/questions.json');
+if(process.env.EXITCODE_E2E!=='1')throw new Error('Use only on an isolated QA database; this resets the event.');
+const base=process.env.TEST_URL||'http://127.0.0.1:5057';
+(async()=>{
+ const browser=await chromium.launch({executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
+ const admin=await browser.newContext(), user=await browser.newContext({viewport:{width:1440,height:1000}});
+ const page=await user.newPage(), errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const progress=async()=> (await (await user.request.get(base+'/api/team-progress')).json());
+ const enter=async()=>{await page.locator('#participant-enter').click();await page.waitForFunction(()=>ParticipantGuard.active);};
+ const total=async points=>{await page.waitForFunction(n=>Number(document.getElementById('arena-team-score').textContent)===n,points);assert.equal((await progress()).score,points);};
+ const use=async name=>{await page.locator('[data-powerup="'+name+'"]').click();await page.locator('#confirm-accept').click();};
+ try{
+  await admin.request.post(base+'/admin/login',{form:{username:'admin',password:'exitcode0_admin_2026'}});
+  await admin.request.post(base+'/api/admin/reset-event',{data:{confirmation:'RESET EVENT'}});
+  await user.request.post(base+'/register',{form:{name:'Power-up UI QA',member1:'Ada',member2:'Grace'}});
+  await admin.request.post(base+'/api/admin/event-action',{data:{action:'start'}});
+  await page.goto(base+'/arena');await enter();await page.waitForFunction(()=>!document.getElementById('correction').disabled);
+  let release, captured, held=false;
+  const gate=new Promise(resolve=>release=resolve), ready=new Promise(resolve=>captured=resolve);
+  await page.route('**/api/team-progress',async route=>{
+    if(held)return route.continue();held=true;
+    const response=await route.fetch();captured();await gate;await route.fulfill({response});
+  });
+  await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));await ready;
+  await use('rubber-duck');await total(-5);
+  release();await page.waitForFunction(()=>document.querySelector('[data-powerup="rubber-duck"] [data-powerup-status]').textContent.includes('Used'));
+  await total(-5);await page.unroute('**/api/team-progress');
+  console.log('PASS hint immediately shows -5 and a delayed old progress poll cannot overwrite it');
+  await use('git-revert');await total(-12);
+  await page.waitForFunction(()=>!document.getElementById('correction').disabled);
+  await use('double-commit');await total(3);
+  await page.waitForFunction(()=>document.querySelector('[data-powerup="double-commit"] [data-powerup-status]').textContent.includes('+15'));
+  const state=await progress(), qid=await page.locator('#form-question-id').inputValue(), question=bank.find(q=>q.id===qid);
+  assert.equal(state.completed_count,0);
+  for(const endpoint of ['rubber-duck','git-revert','double-commit'])assert.equal((await user.request.post(base+'/api/powerup/'+endpoint,{data:{question_id:qid}})).status(),400);
+  await total(3);
+  await page.reload();await enter();await total(3);
+  await page.waitForFunction(()=>!document.getElementById('correction').disabled);
+  await page.locator('#error_location').fill(question.bug_location.match(/\d+/)[0]);await page.locator('#error_type').selectOption(question.error_type);
+  await page.locator('#expected_output').fill(question.expected_output);await page.locator('#correction').fill(question.correction);
+  await page.locator('#commit-fix-btn').click();await page.locator('#confirm-accept').click();
+  await total(question.points+3);
+  assert.match(await page.locator('#answer-status').innerText(),/already applied to team total/);
+  await page.screenshot({path:'/tmp/exitcode-fixed-powerups.png'});
+  await page.locator('a[href="/leaderboard"]:visible').click();await page.waitForURL(/leaderboard/);
+  await page.waitForFunction(()=>document.querySelector('#leaderboard-table-body').textContent.includes('Power-up UI QA'));
+  const rows=(await (await user.request.get(base+'/api/leaderboard-data')).json()).leaderboard;
+  assert.equal(rows[0].score,question.points+3);assert.equal(await page.evaluate(()=>!!document.fullscreenElement),true);
+  assert.deepEqual(errors,[]);
+  console.log('PASS swap -7 and Double Commit +15 immediately; retries/reload/submission/leaderboard retain the correct total; no browser errors');
+ }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

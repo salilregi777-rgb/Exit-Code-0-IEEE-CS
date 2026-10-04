@@ -61,6 +61,11 @@ def init_db(force_reset=False):
         conn.commit()
 
     conn.executescript(schema_sql)
+
+    powerup_columns = {r["name"] for r in conn.execute("PRAGMA table_info(powerups)")}
+    if "score_adjustment" not in powerup_columns:
+        # Existing uses retain their historical grading; never charge them again.
+        conn.execute("ALTER TABLE powerups ADD COLUMN score_adjustment REAL NOT NULL DEFAULT 0")
     
     # Additive migrations preserve existing competition data.
     columns = {r["name"] for r in conn.execute("PRAGMA table_info(submissions)")}
@@ -170,6 +175,29 @@ def init_db(force_reset=False):
 
     conn.commit()
     conn.close()
+
+def recalculate_team_score(cur, team_id, submission=False):
+    """One total for the arena, judging, exports and leaderboard, including tools."""
+    stats = cur.execute("""SELECT COALESCE(SUM(points), 0) AS points, COUNT(*) AS completed
+        FROM (SELECT MAX(total_score) AS points FROM submissions
+          WHERE team_id = ? AND is_accepted = 1 GROUP BY question_id)""", (team_id,)).fetchone()
+    adjustments = cur.execute("SELECT COALESCE(SUM(score_adjustment), 0) FROM powerups WHERE team_id = ?", (team_id,)).fetchone()[0]
+    total = round(stats["points"] + adjustments, 2)
+    cur.execute("""UPDATE scores SET
+        last_submission_time = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_submission_time END,
+        score = ?, completed_count = ?, last_updated = CURRENT_TIMESTAMP WHERE team_id = ?""",
+        (int(submission), total, stats["completed"], team_id))
+    return total
+
+
+def get_team_score(team_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
+
 
 def generate_team_id(conn):
     cur = conn.cursor()
@@ -310,6 +338,7 @@ def _answer_summary(conn, team_id, question_id, points, include_submission=False
         result["field_results"] = answer_field_results(dict(row), evaluation.get("base_points", points))
         result["score_overridden"] = bool(row["override_reason"])
         result["penalties"] = evaluation.get("penalties", {})
+        result["powerup_adjustments"] = evaluation.get("powerup_adjustments", {})
         for key in ("hint_used", "swap_used", "is_double_commit"):
             result[key] = evaluation.get(key, 0)
         if include_submission:

@@ -125,7 +125,7 @@ def test_admin_score_override(client):
     conn.close()
 
     # Authenticate as admin
-    with client.session_transaction() as sess:
+    with client.session_transaction(path="/admin") as sess:
         sess["is_admin"] = True
 
     # Override score to 20.0 with reason

@@ -32,7 +32,7 @@ def join(client, name="Integrity Team"):
 
 
 def admin(client):
-    with client.session_transaction() as session:
+    with client.session_transaction(path="/admin") as session:
         session["is_admin"] = True
 
 
@@ -64,6 +64,9 @@ def test_duplicate_network_retry_preserves_double_commit_and_timestamp(client):
     second = client.post("/api/submit-bug-fix", json=payload).get_json()
     assert first["success"] and second == first
     assert first["result"]["is_double_commit"] == 1
+    assert first["result"]["total_score"] == 20
+    assert first["result"]["powerup_adjustments"]["double_commit"] == 15
+    assert first["new_score"] == 35
     conn = get_db_connection()
     assert conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 1
     conn.execute("UPDATE scores SET last_submission_time = '2026-10-07 10:00:00'")

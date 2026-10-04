@@ -2,6 +2,7 @@ import sys
 import os
 import tempfile
 import atexit
+from unittest.mock import patch
 
 # Acceptance checks must never reset a real competition database.
 _test_directory = tempfile.TemporaryDirectory(prefix="exitcode-acceptance-")
@@ -14,6 +15,9 @@ from event_manager import reset_event_data, start_event, get_event_state, end_ev
 from scoring import process_submission, activate_rubber_duck, activate_git_revert, arm_double_commit
 from config import Config
 
+# These scoring examples use known questions; independent shuffle coverage is
+# in tests/test_database.py and scripts/navigation_smoke.cjs.
+@patch('database.balanced_question_order', lambda rows: sorted(rows, key=lambda row: row['id']))
 def run_critical_scenario_checks():
     print("\n=======================================================")
     print(" EXECUTING 10 CRITICAL ACCEPTANCE SCENARIOS (Section 40)")
@@ -26,6 +30,8 @@ def run_critical_scenario_checks():
     tid_a, err = register_team("Team Alpha", "Lead Alice", "Member Bob")
     assert err is None, f"Registration failed: {err}"
     assert tid_a == "EX0-001"
+    tid_b, err = register_team("Team Beta", "Bob Lead", "Charlie Dev")
+    assert err is None
     
     # Simulate page refresh by opening new DB connection and checking team
     conn = get_db_connection()
@@ -99,6 +105,7 @@ def run_critical_scenario_checks():
     cur = conn.cursor()
     cur.execute("SELECT is_used FROM powerups WHERE team_id = ? AND powerup_type = 'RUBBER_DUCK'", (tid_a,))
     assert cur.fetchone()["is_used"] == 1
+    assert cur.execute("SELECT score FROM scores WHERE team_id = ?", (tid_a,)).fetchone()[0] == awarded_score - 5
     conn.close()
 
     # Reusing fails
@@ -119,6 +126,7 @@ def run_critical_scenario_checks():
     q2_asgn = cur.fetchone()
     assert q2_asgn["is_abandoned"] == 1
     assert q2_asgn["is_unlocked"] == 0
+    assert cur.execute("SELECT score FROM scores WHERE team_id = ?", (tid_a,)).fetchone()[0] == awarded_score - 12
     conn.close()
 
     # Re-query assigned questions for team
@@ -127,11 +135,13 @@ def run_critical_scenario_checks():
     assert "Q02" not in active_ids
     print(f"[OK] PASS: Git Revert swapped Q02 for {new_qid}. Q02 marked abandoned and cannot return.")
 
-    # --- Scenario 7: Use Double Commit. Submit correct answer. Confirm doubled score. ---
-    print("\n[Scenario 7] Double Commit 2x multiplier verification...")
-    tid_b, _ = register_team("Team Beta", "Bob Lead", "Charlie Dev")
+    # --- Scenario 7: Use Double Commit. Confirm fixed +15 and normal answer points. ---
+    print("\n[Scenario 7] Double Commit fixed bonus verification...")
     ok_arm, msg_arm = arm_double_commit(tid_b, "Q01")
     assert ok_arm is True
+    conn = get_db_connection()
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (tid_b,)).fetchone()[0] == 15
+    conn.close()
 
     sub_b = {
         "error_location": "Line 3",
@@ -142,8 +152,11 @@ def run_critical_scenario_checks():
     res_b, err_b = process_submission(tid_b, "Q01", sub_b)
     assert err_b is None
     assert res_b["is_double_commit"] == 1
-    assert res_b["total_score"] >= 30.0  # 2x of raw >= 15
-    print(f"[OK] PASS: Double Commit successfully armed and doubled score to {res_b['total_score']} pts.")
+    assert res_b["total_score"] == 20
+    conn = get_db_connection()
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (tid_b,)).fetchone()[0] == 35
+    conn.close()
+    print("[OK] PASS: Double Commit added 15 immediately; the correct answer added its normal 20 points.")
 
     # --- Scenario 8: Attempt to submit after timer reaches zero. Confirm submission is rejected. ---
     print("\n[Scenario 8] Reject submission after timer expiration...")
@@ -186,7 +199,7 @@ def run_critical_scenario_checks():
     cur.execute("SELECT score FROM scores WHERE team_id = ?", (tid_a,))
     rec_score = cur.fetchone()["score"]
     conn.close()
-    assert rec_score == awarded_score
+    assert rec_score == awarded_score - 12
     print(f"[OK] PASS: Event state ('COMPLETED') and score ({rec_score}) successfully recovered from SQLite.")
 
     # --- Scenario 10: Try to access an admin route without authentication. Confirm access is denied. ---

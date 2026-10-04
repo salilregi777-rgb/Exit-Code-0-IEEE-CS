@@ -29,8 +29,12 @@
   }
   async function sync() {
     if (pending) return;
+    const organizerPage = location.pathname === '/admin' || location.pathname.startsWith('/admin/');
+    // The sign-in form needs no authenticated polling. Organizer dashboard
+    // requests use its own session even if a participant tab is blocked.
+    if (organizerPage && !document.getElementById('admin-workspace')) return;
     pending = true; clearTimeout(pollTimeout);
-    try { apply(await App.request('/api/event-status')); } catch (_) { App.setConnection(false); }
+    try { apply(await App.request(organizerPage ? '/api/admin/event-status' : '/api/event-status')); } catch (_) { App.setConnection(false); }
     finally { pending = false; pollTimeout = setTimeout(sync, document.hidden ? 12000 : 5000); }
   }
   window.EventClock = { sync, apply, format, get state() { return state; } };
