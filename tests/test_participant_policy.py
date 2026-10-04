@@ -2,7 +2,7 @@ import uuid
 import pytest
 from app import app
 from database import init_db, register_team, get_db_connection, get_client_question
-from event_manager import end_event, start_event, reset_event_data
+from event_manager import end_event, pause_event, start_event, reset_event_data
 from quiz import QUESTIONS
 from participant_policy import FEEDBACK_QUESTIONS
 
@@ -32,10 +32,12 @@ def complete_quiz(client):
         assert answer.status_code == 200
     return answer.get_json()['quiz']
 
-def test_guard_required_from_login_through_every_round(client):
+def test_guard_required_after_event_start_through_every_round(client):
+    assert not client.get('/api/fullscreen/status').get_json()['required']
     assert b'participant-gate' in client.get('/waiting').data
     assert b'participant-gate' in client.get('/').data
     start_event()
+    assert client.get('/api/fullscreen/status').get_json()['required']
     for route,data in [('/api/submit-bug-fix',{'question_id':'Q01'}),('/api/powerup/rubber-duck',{'question_id':'Q01'}),('/api/quiz/start',{})]:
         denied=client.post(route,json=data)
         assert denied.status_code == 403 and denied.get_json()['fullscreen_required']
@@ -45,6 +47,7 @@ def test_guard_required_from_login_through_every_round(client):
     assert client.post('/api/quiz/start',json={}).get_json()['fullscreen_required']
 
 def test_two_exits_persist_across_logout_login_and_block_all_rounds(client):
+    start_event()
     signal(client,'fullscreen_enter')
     first=signal(client,'fullscreen_exit','first').get_json()
     assert first['violations']==1 and not first['blocked'] and not first['is_fullscreen']
@@ -70,6 +73,7 @@ def test_focus_departure_signals_deduplicate_and_admin_can_restore(client):
     for kind in ['tab_hidden','window_blur','window_focus','window_visible']:
         assert signal(client, kind).status_code == 200
     assert client.get('/api/fullscreen/status').get_json()['violations'] == 0
+    start_event()
     signal(client,'fullscreen_enter')
     first = signal(client,'window_blur').get_json()
     assert first['counted'] and first['violations'] == 1 and not first['is_fullscreen']
@@ -94,6 +98,7 @@ def test_focus_departure_signals_deduplicate_and_admin_can_restore(client):
 
 
 def test_delayed_old_document_signals_cannot_close_new_fullscreen_interval(client):
+    start_event()
     def send(kind, eid, activation, document):
         return client.post('/api/activity',json={'event_type':kind,'event_id':eid,'activation_id':activation,'document_id':document}).get_json()
     send('fullscreen_enter','enter-old',None,'old-page')
@@ -110,6 +115,7 @@ def test_delayed_old_document_signals_cannot_close_new_fullscreen_interval(clien
 
 def test_quiz_review_uses_locked_answers_and_feedback_is_validated_saved_once(client):
     ratings={q['id']:4 for q in FEEDBACK_QUESTIONS}
+    start_event()
     signal(client,'fullscreen_enter')
     assert client.post('/api/quiz/feedback',json={'ratings':ratings}).status_code==400
     final=complete_quiz(client)
@@ -139,6 +145,7 @@ def test_quiz_close_records_all_remaining_as_unanswered(client):
 
 
 def test_old_entry_and_released_entry_cannot_reactivate_access(client):
+    start_event()
     def send(kind, eid, activation, document, started):
         return client.post('/api/activity',json={'event_type':kind,'event_id':eid,'activation_id':activation,'document_id':document,'document_started_at':started}).get_json()
     send('fullscreen_enter','new-entry',None,'new-document',200)
@@ -152,6 +159,7 @@ def test_old_entry_and_released_entry_cannot_reactivate_access(client):
 
 
 def test_offline_departure_reconciles_once_after_logout_login(client):
+    start_event()
     entered = client.post('/api/activity',json={'event_type':'fullscreen_enter','event_id':'offline-entry','document_id':'old-doc','document_started_at':100}).get_json()
     assert entered['is_fullscreen']
     client.get('/logout')
@@ -160,3 +168,63 @@ def test_offline_departure_reconciles_once_after_logout_login(client):
     reconciled = client.post('/api/activity',json=queued).get_json()
     assert reconciled['violations']==1 and not reconciled['is_fullscreen']
     assert client.post('/api/activity',json=queued).get_json()['violations']==1
+
+
+def test_waiting_fullscreen_and_focus_cycles_never_arm_or_count(client):
+    for cycle in range(3):
+        for kind in ('fullscreen_enter', 'window_blur', 'tab_hidden', 'fullscreen_exit', 'fullscreen_leave'):
+            state = signal(client, kind, f'waiting-{cycle}-{kind}').get_json()
+            assert not state['required'] and not state['is_fullscreen']
+            assert not state['blocked'] and not state['counted']
+            assert state['violations'] == 0 and state['activation_id'] is None
+    status = client.get('/api/fullscreen/status').get_json()
+    assert status['team_active']
+    conn = get_db_connection()
+    assert conn.execute("SELECT COUNT(*) FROM team_activity WHERE event_type = 'session_violation'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_event_start_requires_fresh_entry_and_ignores_queued_waiting_tokens(client):
+    waiting_entry = {'event_type': 'fullscreen_enter', 'event_id': 'waiting-entry', 'document_id': 'waiting-page', 'document_started_at': 100}
+    waiting = client.post('/api/activity', json=waiting_entry).get_json()
+    assert not waiting['is_fullscreen'] and not waiting['required']
+    start_event()
+    repeated = client.post('/api/activity', json=waiting_entry).get_json()
+    assert repeated['required'] and not repeated['recorded'] and not repeated['is_fullscreen']
+    departure = {'event_type': 'window_blur', 'event_id': 'queued-waiting-blur', 'activation_id': 'waiting-entry', 'document_id': 'waiting-page', 'document_started_at': 100}
+    assert not client.post('/api/activity', json=departure).get_json()['counted']
+    live = client.post('/api/activity', json={**waiting_entry, 'event_id': 'live-entry'}).get_json()
+    assert live['is_fullscreen'] and live['activation_id'] == 'live-entry'
+    stale = client.post('/api/activity', json={**departure, 'event_id': 'another-waiting-blur'}).get_json()
+    assert not stale['counted'] and stale['violations'] == 0 and stale['is_fullscreen']
+    first = client.post('/api/activity', json={**departure, 'event_id': 'live-blur', 'activation_id': 'live-entry'}).get_json()
+    assert first['violations'] == 1 and not first['blocked']
+    signal(client, 'fullscreen_enter', 'second-live-entry')
+    assert signal(client, 'fullscreen_exit', 'second-live-exit').get_json()['blocked']
+
+
+def test_waiting_snapshot_releases_intervals_created_by_older_clients(client):
+    with client.session_transaction() as sess:
+        team_id = sess['team_id']
+    client.get('/api/fullscreen/status')
+    conn = get_db_connection()
+    conn.execute("UPDATE fullscreen_sessions SET is_fullscreen = 1, active_event_id = 'legacy-entry', document_id = 'legacy-page', document_started_at = 123 WHERE team_id = ?", (team_id,))
+    conn.commit()
+    conn.close()
+    waiting = client.get('/api/fullscreen/status').get_json()
+    assert not waiting['required'] and not waiting['is_fullscreen'] and waiting['activation_id'] is None
+    start_event()
+    delayed = client.post('/api/activity', json={'event_type': 'window_blur', 'event_id': 'legacy-blur', 'activation_id': 'legacy-entry', 'document_id': 'legacy-page'}).get_json()
+    assert not delayed['counted'] and delayed['violations'] == 0
+
+
+def test_guard_stays_required_when_started_event_is_paused_or_finished(client):
+    start_event()
+    assert pause_event()[0]
+    paused = signal(client, 'fullscreen_enter').get_json()
+    assert paused['required'] and paused['is_fullscreen']
+    assert signal(client, 'window_blur').get_json()['violations'] == 1
+    assert end_event()[0]
+    completed = signal(client, 'fullscreen_enter').get_json()
+    assert completed['required'] and completed['is_fullscreen']
+    assert signal(client, 'tab_hidden').get_json()['blocked']

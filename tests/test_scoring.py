@@ -16,6 +16,14 @@ def setup_clean_db():
     yield
     reset_event_data("RESET EVENT")
 
+
+def assigned_question(team_id, order):
+    conn = get_db_connection()
+    row = conn.execute("SELECT q.* FROM questions q JOIN question_assignments qa ON qa.question_id = q.id WHERE qa.team_id = ? AND qa.question_order = ? AND qa.is_abandoned = 0", (team_id, order)).fetchone()
+    conn.close()
+    return dict(row)
+
+
 def test_submission():
     team_id, _ = register_team("ScoringTeam", "Member 1", "Member 2")
     submission_data = {
@@ -23,7 +31,7 @@ def test_submission():
         "error_type": "Logical Error",
         "expected_output": "10",
         "cause": "The loop stops before processing the last element due to len(numbers) - 1.",
-        "correction": "Use range(len(numbers)) instead."
+        "correction": "for i in range(len(numbers)):"
     }
 
     result, err = process_submission(team_id, "Q01", submission_data)
@@ -125,7 +133,7 @@ def test_rubber_duck():
         "error_type": "Logical Error",
         "expected_output": "10",
         "cause": "The loop stops before processing the last element due to len(numbers) - 1.",
-        "correction": "Use range(len(numbers)) instead."
+        "correction": "for i in range(len(numbers)):"
     }
     res, err = process_submission(team_id, "Q01", sub)
     assert err is None
@@ -168,7 +176,7 @@ def test_double_commit():
         "error_type": "Logical Error",
         "expected_output": "10",
         "cause": "The loop stops before processing the last element due to len(numbers) - 1.",
-        "correction": "Use range(len(numbers)) instead."
+        "correction": "for i in range(len(numbers)):"
     }
     res, err = process_submission(team_id, "Q01", accurate_sub)
     assert err is None
@@ -189,19 +197,14 @@ def test_score_calculation():
         "error_type": "Logical Error",
         "expected_output": "10",
         "cause": "The loop stops before processing the last element.",
-        "correction": "Use range(len(numbers)) instead."
+        "correction": "for i in range(len(numbers)):"
     }
     res1, _ = process_submission(team_id, "Q01", sub1)
 
-    # Solve Q02
-    sub2 = {
-        "error_location": "Line 4",
-        "error_type": "Syntax Error",
-        "expected_output": "Count is 10",
-        "cause": "Missing semicolon delimiter",
-        "correction": "int count = 10;"
-    }
-    res2, _ = process_submission(team_id, "Q02", sub2)
+    # Solve the next slot in the shared balanced question order.
+    next_question = assigned_question(team_id, 2)
+    res2, error = process_submission(team_id, next_question["id"], reference_answer(next_question))
+    assert error is None
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -214,50 +217,92 @@ def test_score_calculation():
 
 def reference_answer(question):
     return {"error_location": question["bug_location"], "error_type": question["error_type"],
-            "expected_output": question["expected_output"], "cause": question["cause"],
+            "expected_output": question["expected_output"],
             "correction": question["correction"]}
 
 
 def sample_question():
     return {"points": 20, "error_type": "Logical Error", "bug_location": "Line 3",
-            "expected_output": "10", "cause": "The loop stops before the last element.",
-            "correction": "Use range(len(numbers)) instead.",
-            "cause_keywords": ["loop", "last", "element"],
-            "correction_keywords": ["range", "len", "numbers"]}
+            "expected_output": "10", "language": "Python",
+            "code": "def calculate_sum(numbers):\n    total = 0\n    for i in range(len(numbers) - 1):\n        total += numbers[i]\n    return total\nprint(calculate_sum([1, 2, 3, 4]))",
+            "correction": "    for i in range(len(numbers)):"}
 
 
-@pytest.mark.parametrize("field,token", [("cause", "loop"), ("correction", "range")])
-@pytest.mark.parametrize("repeat", [1, 5])
-def test_descriptive_answer_requires_two_distinct_keywords(field, token, repeat):
+@pytest.mark.parametrize("correction", ["range len numbers", "Use range(len(numbers)) instead.", "for i in range(len(numbers) - 1):", "for i in RANGE(len(numbers)):", "for i in range(len(numbers))", "for i in range(len(numbers)):\n    pass", "```for i in range(len(numbers)):```"])
+def test_correction_rejects_prose_wrong_code_and_multiple_lines(correction):
     question = sample_question()
     submission = reference_answer(question)
-    submission[field] = " ".join([token] * repeat)
+    submission["correction"] = correction
     result = evaluate_submission(question, submission)
-    assert result[f"{field}_score"] == 0
-    assert result["keyword_matches"][field] == 1
+    assert result["correction_score"] == 0
     assert result["answer_status"] == "partial"
 
 
-def test_keyword_matching_uses_boundaries_and_deduplicates_reference_entries():
+@pytest.mark.parametrize("correction", ["for i in range(len(numbers)):", "    for i in range( len( numbers ) ) :", "    for i in range(len(numbers)): # include every number"])
+def test_python_correction_accepts_safe_formatting(correction):
     question = sample_question()
-    question["cause_keywords"] = json.dumps(["loop", "LOOP", "last"])
     submission = reference_answer(question)
-    submission["cause"] = "loop loop elastic"
+    submission["correction"] = correction
     result = evaluate_submission(question, submission)
-    assert result["cause_score"] == 0
-    assert result["keyword_matches"]["cause"] == 1
-    submission["cause"] = "LOOP misses the LAST item"
-    assert evaluate_submission(question, submission)["cause_score"] > 0
+    assert result["correction_score"] == 11 and result["total_score"] == 20
 
 
-def test_legacy_reference_fallback_ignores_stopwords():
+def test_retired_cause_field_and_keyword_arrays_cannot_award_credit():
     question = sample_question()
-    question.pop("cause_keywords")
-    submission = reference_answer(question)
-    submission["cause"] = "the loop"
-    assert evaluate_submission(question, submission)["cause_score"] == 0
-    submission["cause"] = "the last loop"
-    assert evaluate_submission(question, submission)["cause_score"] > 0
+    question.update(cause="loop last element", cause_keywords=["loop", "last"], correction_keywords=["range", "len"])
+    result = evaluate_submission(question, {"cause": "loop last element", "correction": "range len"})
+    assert result["cause_score"] == result["correction_score"] == result["total_score"] == 0
+    assert "keyword_matches" not in result
+
+
+@pytest.mark.parametrize("points", [20, 25, 35])
+def test_four_field_rubric_matches_each_difficulty_total(points):
+    question = {**sample_question(), "points": points}
+    result = evaluate_submission(question, reference_answer(question))
+    assert result["total_score"] == points
+    assert [field["max_score"] for field in result["field_results"]] == [round(points * weight, 2) for weight in (0.1, 0.15, 0.2, 0.55)]
+    assert sum(field["score"] for field in result["field_results"]) == points
+
+
+def test_python_indentation_bug_requires_the_correct_block_depth():
+    question = {"language": "Python", "bug_location": "Line 5", "points": 20,
+                "code": "def total(numbers):\n    result = 0\n    for number in numbers:\n        result += number\n        return result\nprint(total([1, 2]))",
+                "correction": "    return result"}
+    assert evaluate_submission(question, {"correction": "    return result"})["correction_score"] == 11
+    for wrong in ("return result", "        return result", "    return Result"):
+        assert evaluate_submission(question, {"correction": wrong})["correction_score"] == 0
+
+
+def test_python_string_values_preserve_case_and_spaces_but_allow_quote_style():
+    question = {"language": "Python", "bug_location": "Line 1", "points": 20,
+                "code": 'message = "wrong"\nprint(message)', "correction": 'message = "Hello World"'}
+    assert evaluate_submission(question, {"correction": "message='Hello World'"})["correction_score"] == 11
+    for wrong in ('message = "hello world"', 'message = "HelloWorld"', 'message = "Hello  World"'):
+        assert evaluate_submission(question, {"correction": wrong})["correction_score"] == 0
+
+
+@pytest.mark.parametrize("correction,correct", [
+    ('printf("Score: %.1f\\n", score);', True),
+    ('  printf ( "Score: %.1f\\n" , score ) ; // fixed precision', True),
+    ('printf("Score: %.0f\\n", score);', False),
+    ('printf("Score:%.1f\\n", score);', False),
+    ('printf("score: %.1f\\n", score);', False),
+    ('printf("Score: %.1f\\n", Score);', False),
+    ('printf("Score: %.1f\\n", score)', False),
+    ('Print score with 1 decimal place', False),
+    ('printf("Score: %.1f\\n", score);\nreturn 0;', False),
+])
+def test_c_correction_keeps_literals_case_and_punctuation(correction, correct):
+    question = {"language": "C", "points": 20, "correction": 'printf("Score: %.1f\\n", score);'}
+    assert evaluate_submission(question, {"correction": correction})["correction_score"] == (11 if correct else 0)
+
+
+def test_c_operator_token_boundaries_cannot_be_erased_by_whitespace():
+    question = {"language": "C", "points": 20, "correction": 'if (number == 0) {'}
+    for wrong in ('if (number = 0) {', 'if (number = = 0) {', 'if (number != 0) {'):
+        assert evaluate_submission(question, {"correction": wrong})["correction_score"] == 0
+    question["correction"] = 'count++;'
+    assert evaluate_submission(question, {"correction": 'count + +;'})["correction_score"] == 0
 
 
 @pytest.mark.parametrize("hint,swap,double", [
@@ -311,7 +356,7 @@ def test_incorrect_answer_is_final_and_cannot_use_powerups_afterward():
         assert powerup(team_id, "Q01")[0] is False
     conn = get_db_connection()
     assert conn.execute("SELECT SUM(is_used) + SUM(is_armed) FROM powerups WHERE team_id = ?", (team_id,)).fetchone()[0] == 0
-    assert conn.execute("SELECT is_unlocked FROM question_assignments WHERE team_id = ? AND question_id = 'Q02'", (team_id,)).fetchone()[0] == 1
+    assert conn.execute("SELECT is_unlocked FROM question_assignments WHERE team_id = ? AND question_order = 2 AND is_abandoned = 0", (team_id,)).fetchone()[0] == 1
     conn.close()
 
 
@@ -366,9 +411,9 @@ def test_swap_penalty_is_persisted_on_replacement_and_hint_cannot_be_escaped(una
     record = conn.execute("SELECT total_score, response_json FROM submissions WHERE team_id = ?", (team_id,)).fetchone()
     assert record["total_score"] == pytest.approx(expected)
     assert json.loads(record["response_json"])["penalties"] == first["penalties"]
-    next_question = dict(conn.execute("SELECT * FROM questions WHERE id = 'Q02'").fetchone())
     conn.close()
-    next_result, error = process_submission(team_id, "Q02", reference_answer(next_question))
+    next_question = assigned_question(team_id, 2)
+    next_result, error = process_submission(team_id, next_question["id"], reference_answer(next_question))
     assert error is None and next_result["swap_used"] == next_result["hint_used"] == 0
 
 

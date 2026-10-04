@@ -12,7 +12,11 @@ const base=process.env.TEST_URL || 'http://127.0.0.1:5057';
  await admin.request.post(base+'/admin/login',{form:{username:'admin',password:'exitcode0_admin_2026'}});
  await admin.request.post(base+'/api/admin/reset-event',{data:{confirmation:'RESET EVENT'}});
  await user.request.post(base+'/register',{form:{name:'Focus QA',member1:'A',member2:'B'}});
- await page.goto(base+'/waiting');await enter();
+ await page.goto(base+'/waiting');assert.equal(await page.locator('#participant-gate').isVisible(),false);
+ await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
+ assert.equal((await state()).violations,0);
+ await admin.request.post(base+'/api/admin/event-action',{data:{action:'start'}});
+ await page.waitForURL(/arena/);await enter();
  // Exercise a window-blur departure while the DOM remains fullscreen (desktop app-switch path).
  await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
  await page.waitForFunction(()=>document.getElementById('participant-violations').textContent.startsWith('1 /'));

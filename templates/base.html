@@ -29,8 +29,6 @@
     <nav id="site-navigation" class="nav-links" aria-label="Main navigation">
       {% if request.path.startswith('/admin') and session.get('is_admin') %}
       <a href="{{ url_for('admin_dashboard') }}" class="nav-link active">Event control</a>
-      <a href="{{ url_for('leaderboard') }}" class="nav-link">Leaderboard</a>
-      <a href="{{ url_for('index') }}" class="nav-link">View website ↗</a>
       <a href="{{ url_for('admin_logout') }}" class="btn btn-secondary btn-sm">Sign out</a>
       {% else %}
       <a href="{{ url_for('index') }}" class="nav-link {{ 'active' if request.path == '/' else '' }}">Home</a>
@@ -56,10 +54,10 @@
     <form method="dialog"><span class="eyebrow">CONFIRM ACTION</span><h2 id="confirm-title">Continue?</h2><p id="confirm-message" class="muted"></p><div class="modal-actions"><button value="cancel" class="btn btn-secondary" autofocus>Cancel</button><button id="confirm-accept" value="confirm" class="btn btn-primary">Confirm</button></div></form>
   </dialog>
   {% if session.get('team_id') and not request.path.startswith('/admin') and request.path != '/blocked' %}
-  <dialog id="participant-gate" class="participant-gate" aria-labelledby="participant-gate-title" aria-describedby="participant-gate-message" data-team="{{ session.get('team_id') }}" data-generation="{{ session.get('generation', '') }}">
+  <dialog id="participant-gate" class="participant-gate" aria-labelledby="participant-gate-title" aria-describedby="participant-gate-message" data-team="{{ session.get('team_id') }}" data-generation="{{ session.get('generation', '') }}" data-required="{{ 'false' if event_state.event_status == 'WAITING' else 'true' }}">
     <span class="eyebrow">PARTICIPANT SESSION</span><div class="guard-icon" aria-hidden="true">⛶</div>
     <h2 id="participant-gate-title">Enter fullscreen</h2>
-    <p id="participant-gate-message">Stay in fullscreen and keep this window focused until you sign out. Switching apps or tabs, or exiting fullscreen, triggers a warning. A second violation blocks this account.</p>
+    <p id="participant-gate-message">The event has started. Enter fullscreen before attempting questions and keep this window focused until you sign out. Switching apps or tabs, or exiting fullscreen, triggers a warning. A second violation blocks this account.</p>
     <span id="participant-violations" class="guard-count">0 / 2 violations</span>
     <div class="guard-actions"><button id="participant-enter" class="btn btn-primary" type="button">Enter fullscreen →</button><a href="{{ url_for('logout') }}" class="text-link">Sign out</a></div>
     <p id="participant-gate-error" role="alert"></p>

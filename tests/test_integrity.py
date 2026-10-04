@@ -24,6 +24,8 @@ def join(client, name="Integrity Team"):
     with client.session_transaction() as session:
         session.clear()
         session["team_id"] = team_id
+    # These cases exercise participating teams; lobby fullscreen entries no longer arm access.
+    assert start_event()[0]
     assert client.post("/api/activity", json={"event_type": "fullscreen_enter", "event_id": "test-login-" + team_id}).status_code == 200
     return team_id
 
@@ -35,8 +37,7 @@ def admin(client):
 
 def answer(**extra):
     return dict(question_id="Q01", error_location="3", error_type="Logical Error", expected_output="10",
-                cause="The loop stops before processing the last element due to len(numbers) - 1.",
-                correction="Use range(len(numbers)) instead.", **extra)
+                correction="for i in range(len(numbers)):", **extra)
 
 
 def test_locked_question_cannot_be_read_scored_or_targeted(client):
@@ -247,3 +248,20 @@ def test_init_db_is_additive_and_preserves_existing_data(client):
     assert conn.execute("SELECT COUNT(*) FROM teams WHERE id = ?", (team_id,)).fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 1
     conn.close()
+
+
+def test_multiline_correction_does_not_consume_the_single_attempt(client):
+    team_id = join(client)
+    payload = answer()
+    payload["correction"] = "for i in range(len(numbers)):\n    total += numbers[i]"
+    rejected = client.post("/api/submit-bug-fix", json=payload)
+    assert rejected.status_code == 400
+    conn = get_db_connection()
+    assert conn.execute("SELECT COUNT(*) FROM submissions WHERE team_id = ?", (team_id,)).fetchone()[0] == 0
+    conn.close()
+    saved = client.post("/api/submit-bug-fix", json=answer(cause="Retired field is ignored")).get_json()
+    assert saved["success"] and saved["result"]["total_score"] == 20
+    assert saved["result"]["cause_score"] == 0
+    assert len(saved["result"]["field_results"]) == 4
+    reviewed = client.get("/api/question/Q01").get_json()["question"]
+    assert "cause" not in reviewed["submission"]

@@ -1,7 +1,9 @@
 import pytest
 import sqlite3
+import json
 from database import init_db, get_db_connection, register_team, generate_team_id, get_team_assigned_questions, get_client_question
 from event_manager import reset_event_data
+from database import QUESTION_BANK_VERSION
 
 @pytest.fixture(autouse=True)
 def setup_clean_db():
@@ -160,3 +162,74 @@ def test_question_persistence():
     second_fetch = get_team_assigned_questions(team_id)
     assert [q["id"] for q in first_fetch] == [q["id"] for q in second_fetch]
     assert [q["is_unlocked"] for q in first_fetch] == [q["is_unlocked"] for q in second_fetch]
+
+
+def test_shared_shuffled_order_has_one_difficult_question_inside_each_six():
+    first, _ = register_team("First shared order", "One", "Two")
+    second, _ = register_team("Second shared order", "One", "Two")
+    questions = get_team_assigned_questions(first)
+    assert [q["id"] for q in questions] == [q["id"] for q in get_team_assigned_questions(second)]
+    assert [q["id"] for q in questions] != sorted(q["id"] for q in questions)
+    assert len({q["id"] for q in questions}) == 30
+    assert questions[0]["id"] == "Q01"
+    for start in range(0, 30, 6):
+        block = questions[start:start + 6]
+        difficult_positions = [i for i, q in enumerate(block) if q["difficulty"] == "Difficult"]
+        assert difficult_positions in ([2], [3])
+        assert all(q["difficulty"] in ("Easy", "Medium") for i, q in enumerate(block) if i not in difficult_positions)
+    assert {q["difficulty"] for q in questions} == {"Easy", "Medium", "Difficult"}
+    assert all(q["points"] == {"Easy": 20, "Medium": 25, "Difficult": 35}[q["difficulty"]] for q in questions)
+
+
+@pytest.mark.parametrize("status", ["WAITING", "LIVE", "PAUSED", "COMPLETED"])
+def test_bank_order_migration_only_reorders_untouched_waiting_teams(status):
+    team_id, _ = register_team("Existing sequential order", "One", "Two")
+    conn = get_db_connection()
+    for order in range(1, 31):
+        conn.execute("UPDATE question_assignments SET question_order = ?, is_unlocked = ? WHERE team_id = ? AND question_id = ?",
+                     (order, int(order == 1), team_id, f"Q{order:02d}"))
+    conn.execute("UPDATE event_state SET event_status = ? WHERE id = 1", (status,))
+    conn.execute("DELETE FROM data_migrations WHERE name = ?", (QUESTION_BANK_VERSION,))
+    conn.commit()
+    conn.close()
+    init_db()
+    order = [q["id"] for q in get_team_assigned_questions(team_id)]
+    sequential = [f"Q{i:02d}" for i in range(1, 31)]
+    assert (order != sequential) if status == "WAITING" else (order == sequential)
+    assert sum(q["is_unlocked"] for q in get_team_assigned_questions(team_id)) == 1
+
+
+def test_bank_migration_preserves_attempted_order_and_original_review_points():
+    team_id, _ = register_team("Historical score", "One", "Two")
+    conn = get_db_connection()
+    conn.execute("UPDATE questions SET points = 20 WHERE id = 'Q09'")
+    conn.execute("""INSERT INTO submissions(team_id, question_id, error_loc_score,
+        error_type_score, cause_score, output_score, correction_score, total_score)
+        VALUES (?, 'Q09', 2, 3, 5, 4, 6, 20)""", (team_id,))
+    conn.execute("UPDATE scores SET score = 20, completed_count = 1 WHERE team_id = ?", (team_id,))
+    before = [tuple(r) for r in conn.execute("SELECT * FROM question_assignments WHERE team_id = ? ORDER BY id", (team_id,))]
+    conn.execute("DELETE FROM data_migrations WHERE name = ?", (QUESTION_BANK_VERSION,))
+    conn.commit()
+    conn.close()
+    init_db()
+    conn = get_db_connection()
+    assert [tuple(r) for r in conn.execute("SELECT * FROM question_assignments WHERE team_id = ? ORDER BY id", (team_id,))] == before
+    saved = conn.execute("SELECT * FROM submissions WHERE team_id = ?", (team_id,)).fetchone()
+    assert saved["total_score"] == 20
+    assert conn.execute("SELECT score FROM scores WHERE team_id = ?", (team_id,)).fetchone()[0] == 20
+    assert conn.execute("SELECT points FROM questions WHERE id = 'Q09'").fetchone()[0] == 35
+    snapshot = json.loads(saved["response_json"])
+    assert snapshot["base_points"] == snapshot["max_score"] == 20
+    assert snapshot["answer_status"] == "correct"
+    conn.close()
+
+
+def test_order_uses_only_active_questions_without_duplicates():
+    conn = get_db_connection()
+    conn.execute("UPDATE questions SET is_active = 0 WHERE id IN ('Q14', 'Q27')")
+    conn.commit()
+    conn.close()
+    team_id, _ = register_team("Organiser bank changes", "One", "Two")
+    ids = [q["id"] for q in get_team_assigned_questions(team_id)]
+    assert len(ids) == len(set(ids)) == 28
+    assert "Q14" not in ids and "Q27" not in ids

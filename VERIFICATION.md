@@ -89,3 +89,15 @@ The demo timer and animation controls pause together, suspend offscreen/when the
 - Fullscreen exits, window blur and hidden-tab signals share one departure limit. Reentry must be explicit, visible and focused. Correlated signals count once. Browser signals cannot prevent OS application switching; managed kiosk/exam software is required for that.
 - `scripts/focus_policy_smoke.cjs` deterministically exercises window blur while fullscreen and a hidden-tab event. These event tests simulate focus/visibility transitions; they do not claim to lock the OS or test every operating system's shortcut behavior.
 - The existing DotGrid now covers the viewport across public pages, with 1,600 dots maximum, DPR capped at 1.5, no continuous drawing while idle, and static reduced-motion/no-JavaScript fallbacks. Original demo code and animation controllers are preserved.
+
+## Event workflow and single-line corrections · 4 October 2026
+
+- 206 Python tests passed. All 30 corrected C/Python programs compile/run to their expected output.
+- Registration closes atomically when debugging starts; existing teams can log in during later rounds. Waiting-room fullscreen/focus signals cannot produce violations.
+- Debugging now has four scored fields: location 10%, type 15%, output 20%, corrected code line 55%. Root cause is retired. Code comparison preserves operators, literals, case and meaningful Python indentation without executing participant code.
+- Easy/Medium/Difficult questions award 20/25/35 points. A stable shared shuffle places one difficult question within each six-question block.
+- Versioned migration preserves historical scores, review denominators and active/completed assignments; untouched waiting teams adopt the new order.
+- Expanded participant_policy_smoke.cjs passed: stale registration closure, four-field answers, hint penalty, refresh persistence, highlighted Rapid Fire link, feedback-first completion, feedback CSV, removed organizer nav links, unban after publication, modal and blocked-page recovery, and no browser JavaScript errors.
+- focus_policy_smoke.cjs passed: pre-event focus changes ignored, active-round blur warning, correlated-event deduplication and a second simulated hidden-tab departure blocking the account.
+- Organizer feedback CSV includes team identifiers, all six ratings, optional notes and submission time; formula-like text is escaped for spreadsheet safety.
+- Existing preview data was backed up before migration. No commits or pushes were made.

@@ -1,3 +1,4 @@
+import ast
 import re
 import json
 from datetime import datetime, timezone
@@ -23,50 +24,76 @@ def extract_line_numbers(text):
 # Existing Rubber Duck rule is retained; replacements have the same base-point cost.
 HINT_PENALTY_RATE = 0.10
 SWAP_PENALTY_RATE = 0.10
-_KEYWORD_STOPWORDS = frozenset("a an the and or is are was were be been being to of for in on at by with from as it its this that these those due before after instead use using add change line end".split())
+SCORING_VERSION = "single-line-v1"
+_C_TOKEN = re.compile(r'''(?:u8|u|U|L)?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|[A-Za-z_][A-Za-z_0-9]*|(?:0[xX][0-9A-Fa-f]+(?:\.[0-9A-Fa-f]*)?(?:[pP][+-]?\d+)?|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)[uUlLfF]*|>>=|<<=|\.\.\.|->|\+\+|--|<<|>>|<=|>=|==|!=|&&|\|\||\+=|-=|\*=|/=|%=|&=|\^=|\|=|##|[{}\[\]();:?~!%^&*+=|<>.,/#-]''')
 
 
-def _keyword_tokens(text):
-    return set(re.findall(r"[a-z_][a-z_0-9]*|[0-9]+", str(text).casefold()))
+def _single_code_line(value):
+    return isinstance(value, str) and bool(value.strip()) and len(value.splitlines()) == 1 and "\n" not in value and "\r" not in value
 
 
-def _keyword_count(question, field, response):
-    """Count distinct reference concepts, never repeated words or substrings.
+def _c_tokens(line):
+    """Keep literals and operators intact while ignoring formatting/comments."""
+    tokens, offset = [], 0
+    while offset < len(line):
+        if line[offset].isspace():
+            offset += 1
+            continue
+        if line.startswith("//", offset):
+            break
+        if line.startswith("/*", offset):
+            end = line.find("*/", offset + 2)
+            if end == -1:
+                return None
+            offset = end + 2
+            continue
+        token = _C_TOKEN.match(line, offset)
+        if not token:
+            return None
+        tokens.append(token.group())
+        offset = token.end()
+    return tokens
 
-    Curated keyword arrays live only on the server. A nested array may describe
-    synonyms for one concept. Old organizer-created questions without keywords
-    fall back to the meaningful tokens in their reference answer.
+
+def correction_matches(question, response):
+    """Compare one replacement code line without executing participant code.
+
+    Python uses the complete repaired program's syntax tree, so quotes and safe
+    formatting can vary while case, values, operators and block structure matter.
+    C compares lexical tokens, preserving strings, punctuation and operators.
     """
-    groups = question.get(f"{field}_keywords")
-    if isinstance(groups, str):
-        try:
-            groups = json.loads(groups)
-        except (TypeError, ValueError):
-            groups = None
-    if not isinstance(groups, list) or not groups:
-        groups = sorted(_keyword_tokens(question.get(field, "")) - _KEYWORD_STOPWORDS)
-    response_tokens = " " + " ".join(re.findall(r"[a-z_][a-z_0-9]*|[0-9]+", str(response).casefold())) + " "
-    matched = set()
-    for group in groups:
-        alternatives = group if isinstance(group, list) else [group]
-        normalized = set()
-        for alternative in alternatives:
-            if not isinstance(alternative, str):
-                continue
-            phrase = " ".join(re.findall(r"[a-z_][a-z_0-9]*|[0-9]+", alternative.casefold()))
-            if phrase and phrase not in _KEYWORD_STOPWORDS:
-                normalized.add(phrase)
-        # Duplicate keyword entries cannot artificially meet the two-keyword rule.
-        concept = tuple(sorted(normalized))
-        if concept and any(f" {phrase} " in response_tokens for phrase in normalized):
-            matched.add(concept)
-    return len(matched)
+    reference = question.get("correction", "")
+    if not _single_code_line(response) or not _single_code_line(reference):
+        return False
+    language = str(question.get("language", "")).casefold()
+    if language == "c":
+        expected, actual = _c_tokens(reference), _c_tokens(response)
+        return bool(expected) and actual == expected
+    if language != "python":
+        return False
+    locations = extract_line_numbers(question.get("bug_location", ""))
+    source = str(question.get("code", "")).splitlines()
+    if len(locations) != 1 or not 1 <= locations[0] <= len(source):
+        return False
+    index = locations[0] - 1
+    original_indent = re.match(r"[ \t]*", source[index]).group()
+    correct_indent = re.match(r"[ \t]*", reference).group()
+    # Let an answer omit indentation when the question's indentation is already
+    # correct. Indentation bugs must still supply the repaired block depth.
+    if response == response.lstrip(" \t") and original_indent == correct_indent:
+        response = original_indent + response
+    expected, actual = list(source), list(source)
+    expected[index], actual[index] = reference.rstrip(), response.rstrip()
+    try:
+        return ast.dump(ast.parse("\n".join(expected)), include_attributes=False) == ast.dump(ast.parse("\n".join(actual)), include_attributes=False)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
 
 
 def evaluate_submission(question, user_submission, is_double_commit=False, hint_used=False, swap_used=False):
-    """Score once: 25% identification, 25% cause, 20% output, 30% correction.
+    """Score once: 25% identification, 20% output, 55% corrected code line.
 
-    Cause and correction each need at least two distinct reference keywords.
+    Root-cause prose is not scored. The correction must be one valid code line.
     Double Commit applies to the raw score first; hint and swap then each deduct
     10% of the question's base points, with the final score floored at zero.
     """
@@ -94,15 +121,9 @@ def evaluate_submission(question, user_submission, is_double_commit=False, hint_
         if ref_loc and user_loc == ref_loc:
             loc_score = 0.10 * base_points
 
-    user_cause = normalize_text(user_submission.get("cause", ""))
-    cause_keywords = _keyword_count(question, "cause", user_submission.get("cause", ""))
+    # Keep the legacy database component for historical records, always zero for
+    # new submissions under the four-field rubric.
     cause_score = 0.0
-    if user_cause and cause_keywords >= 2:
-        ratio = fuzz.token_set_ratio(user_cause, normalize_text(question.get("cause", "")))
-        if ratio >= 65:
-            cause_score = 0.25 * base_points
-        elif ratio >= 45:
-            cause_score = 0.15 * base_points
 
     # Output is a short, concrete value: substring/fuzzy matching awarded points
     # for "1" against "10", and punctuation stripping lost negative signs.
@@ -110,15 +131,7 @@ def evaluate_submission(question, user_submission, is_double_commit=False, hint_
     user_output = " ".join(str(user_submission.get("expected_output", "")).casefold().split())
     output_score = 0.20 * base_points if ref_output and user_output == ref_output else 0.0
 
-    user_corr = normalize_text(user_submission.get("correction", ""))
-    correction_keywords = _keyword_count(question, "correction", user_submission.get("correction", ""))
-    corr_score = 0.0
-    if user_corr and correction_keywords >= 2:
-        ratio = fuzz.token_set_ratio(user_corr, normalize_text(question.get("correction", "")))
-        if ratio >= 65:
-            corr_score = 0.30 * base_points
-        elif ratio >= 45:
-            corr_score = 0.15 * base_points
+    corr_score = 0.55 * base_points if correction_matches(question, user_submission.get("correction", "")) else 0.0
 
     raw_total = round(type_score + loc_score + cause_score + output_score + corr_score, 2)
     modified_total = raw_total
@@ -132,6 +145,7 @@ def evaluate_submission(question, user_submission, is_double_commit=False, hint_
     answer_status = "correct" if base_points > 0 and raw_total >= base_points else "partial" if raw_total > 0 else "incorrect"
 
     result = {
+        "scoring_version": SCORING_VERSION,
         "error_type_score": round(type_score, 2),
         "error_loc_score": round(loc_score, 2),
         "cause_score": round(cause_score, 2),
@@ -148,7 +162,6 @@ def evaluate_submission(question, user_submission, is_double_commit=False, hint_
         "swap_used": int(bool(swap_used)),
         "penalties": {"hint": hint_penalty, "swap": swap_penalty, "total": round(penalty_total, 2),
                       "applied": round(min(modified_total, penalty_total), 2)},
-        "keyword_matches": {"cause": cause_keywords, "correction": correction_keywords, "required": 2},
         "percentage": round((raw_total / base_points) * 100, 1) if base_points > 0 else 0
     }
     result["field_results"] = answer_field_results(result, base_points)
@@ -254,7 +267,7 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
             submission_data.get("error_location", ""),
             submission_data.get("error_type", ""),
             submission_data.get("expected_output", ""),
-            submission_data.get("cause", ""),
+            "",
             submission_data.get("correction", ""),
             eval_result["error_loc_score"],
             eval_result["error_type_score"],

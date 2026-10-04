@@ -1,7 +1,7 @@
 /* Participant state stays server-controlled; only unsent drafts and review flags are local. */
 (() => {
   'use strict';
-  const fields = ['error_location', 'error_type', 'expected_output', 'cause', 'correction'];
+  const fields = ['error_location', 'error_type', 'expected_output', 'correction'];
   let root, form, qid, progress, generation, draftKey, dirty = false, busy = false, switching = false, submitted = false, requestID = null, reviews = {}, saveTimeout, syncPending = false, loadSerial = 0;
   const byId = id => document.getElementById(id);
   const navigate = url => window.ParticipantGuard ? window.ParticipantGuard.navigate(url, { replace: true }) : location.replace(url);

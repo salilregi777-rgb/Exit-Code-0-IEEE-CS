@@ -48,25 +48,24 @@ python app.py
 - Full-height arena with sequential question navigation, syntax-highlighted read-only code, clickable error-line numbers, review markers, partial-credit response fields, and all three existing power-ups.
 - Unsent drafts saved locally per event generation, team, and question. Successful submissions clear their draft. Local storage contains participant text and review markers only.
 - Server-confirmed submission feedback, idempotent retries after connection loss, live progress, connection status, and synchronized countdown display.
-- Fullscreen is required on every signed-in participant page until logout. The first fullscreen exit, app switch, or tab switch warns; a second distinct departure persistently blocks the team across both rounds and future logins. One departure is counted once even if the browser reports several signals. Unsupported browsers must switch to a fullscreen-capable desktop browser. Fullscreen signals are browser-reported; this is not kiosk software.
+- Before the event starts, teams can register and use the waiting room without fullscreen or focus violations. Starting debugging closes new registrations, including forms already open; existing teams can still sign in. Fullscreen is required before attempting questions and on participant pages through both rounds until logout. The first fullscreen exit, app switch, or tab switch warns; a second distinct departure persistently blocks the team. One departure is counted once even if the browser reports several signals. Unsupported browsers must switch to a fullscreen-capable desktop browser. Fullscreen signals are browser-reported; this is not kiosk software.
 - Live leaderboard, own-team highlighting, rank movement, provisional/frozen states, and explicitly published final results.
 - Separate rapid-fire quiz after debugging. **Quiz points never enter debugging scores or final ranking.**
 
 ### Question bank and scoring
 
-All teams retain the existing common set of **30 questions**, with sequential unlocking. The bank contains 15 Python questions and 15 C questions, focused on first-year programming fundamentals. The ten-question rapid-fire quiz also uses C and Python only. All teams use the same mixed-language track.
+Teams receive **30 questions** in a shared shuffled order, with sequential unlocking and one difficult question in each group of six. Easy questions award **20 points**, Medium **25**, and Difficult **35**. Existing rounds keep their saved assignments and scores. The bank contains 15 Python questions and 15 C questions, focused on first-year programming fundamentals. The ten-question rapid-fire quiz also uses C and Python only. All teams use the same mixed-language track.
 
-The existing rubric is retained:
+Debugging uses four scored fields:
 
 | Component | Base score share |
 | --- | ---: |
 | Error type | 15% |
 | Error location | 10% |
-| Root cause | 25% |
 | Expected output | 20% |
-| Correction | 30% |
+| Corrected line of code | 55% |
 
-Each debugging answer is final after its first submission, even when incorrect. A retry with the same request ID returns the original result. Cause and correction each require at least two distinct relevant keywords for any credit. Rubber Duck and Git Revert each deduct 10% of base points from the affected answer, after Double Commit; deductions add together and scores cannot fall below zero. A hint used before a swap carries its deduction onto the replacement. Participants see correct, partial, or incorrect status and their saved answers, while reference answer keys remain private.
+Each debugging answer is final after its first submission, even when incorrect. A retry with the same request ID returns the original result. Correction must be the complete corrected version of the mistaken line, entered as one line of code. Operators, punctuation, literals, and meaningful Python indentation are checked; prose and keyword matches do not earn correction credit. No root-cause answer is requested. Rubber Duck and Git Revert each deduct 10% of base points from the affected answer, after Double Commit; deductions add together and scores cannot fall below zero. A hint used before a swap carries its deduction onto the replacement. Participants see correct, partial, or incorrect status and their saved answers, while reference answer keys remain private.
 
 Power-ups remain one use per team: **Rubber Duck** reveals a hint with a 10% base-point deduction, **Git Revert** replaces an uncompleted question, and **Double Commit** awards double points at ≥60% accuracy or zero otherwise.
 
@@ -76,10 +75,10 @@ Power-ups remain one use per team: **Rubber Duck** reveals a hint with a 10% bas
 2. Use **Teams** and **Questions** to search the roster and question bank. Inspecting answers is restricted to the organizer console.
 3. In **Event control**, start debugging. Pause preserves remaining server time; resume continues it. Ending requires confirmation and locks submissions.
 4. In **Submissions**, review participant responses and apply bounded score adjustments with a reason.
-5. Inspect **Security** for focus losses, tab switches, fullscreen exits, and last activity. Two departures block the account, including app focus loss and browser tab switches. Review a block in Security, then use Teams → Enable to restore access and reset the violation count.
+5. Inspect **Security** for focus losses, tab switches, fullscreen exits, and last activity after the event starts. Two departures block the account. Use **Unban team** in Security or Teams to restore access with zero violations and preserve answers and scores. The participant can then re-enter fullscreen; old queued departure reports cannot reinstate the cleared ban. Unbanning also restores public ranking eligibility, including after results are published.
 6. After debugging ends, open **Quiz**. The quiz has 10 questions, a 7-minute session deadline, and 42-second server-controlled question deadlines. Refreshing does not reset them.
 7. Verify debugging standings, then **Publish final results** in **Leaderboard**. The participant results page shows final rank and podium only after publication.
-8. Export roster/results as CSV. In **Settings**, reset only after exporting anything needed. Reset requires typing **RESET EVENT** and clears quiz/activity data as well as competition progress.
+8. Export roster/results and **Feedback** ratings/notes as CSV. In **Settings**, reset only after exporting anything needed. Reset requires typing **RESET EVENT** and clears quiz/activity data as well as competition progress.
 
 Event duration and metadata live in `data/config.json`. Question content lives in `data/questions.json`; changing this seed file does not overwrite existing database questions. The Settings panel reports actual configuration rather than presenting nonfunctional editing controls.
 

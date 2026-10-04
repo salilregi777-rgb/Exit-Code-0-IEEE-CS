@@ -108,7 +108,7 @@
     const allowed = { start: ['WAITING'], pause: ['LIVE'], resume: ['PAUSED'], end: ['LIVE', 'PAUSED'] };
     $$('[data-event-action]').forEach(button => { button.disabled = actionInFlight || !allowed[button.dataset.eventAction].includes(state.event_status); });
     const notes = {
-      WAITING: 'Ready when you are. Starting opens the arena for all eligible teams.',
+      WAITING: 'Teams can register without fullscreen restrictions. Starting closes registration and opens the arena for eligible teams.',
       LIVE: 'The debugging round is live. Teams can submit until the server timer expires.',
       PAUSED: 'The clock is paused. Existing progress is preserved; submissions are temporarily locked.',
       COMPLETED: 'Debugging is complete. Submissions are locked and results are ready for verification.'
@@ -181,10 +181,35 @@
     });
     feed.replaceChildren(...rows);
   }
+  function teamAction(team) {
+    const button = element('button', `btn ${team.blocked ? 'btn-primary' : 'btn-secondary'} admin-small-btn`, team.blocked ? 'Unban team' : team.is_active ? 'Disable' : 'Enable');
+    button.type = 'button';
+    button.dataset.teamName = team.team_name;
+    if (team.blocked) button.dataset.teamUnban = team.team_id;
+    else {
+      button.dataset.teamToggle = team.team_id;
+      button.dataset.active = String(Number(!!team.is_active));
+      button.disabled = !!dashboard?.results_published;
+      if (button.disabled) button.title = 'Results are final. Team eligibility is locked.';
+    }
+    return button;
+  }
+  function updateTeamAccess(teams) {
+    const byId = new Map(teams.map(team => [team.team_id, team]));
+    $$('.team-row[data-team-id]').forEach(row => {
+      const team = byId.get(row.dataset.teamId);
+      if (!team) return;
+      const signature = `${team.is_active}:${team.blocked}:${!!dashboard?.results_published}`;
+      if (row.dataset.accessSignature === signature) return;
+      row.dataset.accessSignature = signature;
+      $('[data-team-status]', row).replaceChildren(element('span', `badge ${team.blocked ? 'admin-badge-warning' : team.is_active ? 'admin-badge-success' : 'admin-badge-muted'}`, team.blocked ? 'Blocked · 2 / 2' : team.is_active ? 'Active' : 'Disabled'));
+      $('[data-team-action]', row).replaceChildren(teamAction(team));
+    });
+  }
   function updateSecurity(teams) {
     const target = $('#admin-security-body');
     if (!teams.length) {
-      const row = element('tr'); row.append(element('td', 'admin-table-empty', 'Activity signals will appear here after teams register.')); row.firstChild.colSpan = 6;
+      const row = element('tr'); row.append(element('td', 'admin-table-empty', 'Activity signals will appear here after teams register.')); row.firstChild.colSpan = 7;
       target.replaceChildren(row); return;
     }
     const rows = teams.map(team => {
@@ -196,7 +221,10 @@
       const status = element('td');
       const hasSignals = focus + tabs + fullscreen > 0;
       status.append(element('span', `badge ${team.blocked || team.violations ? 'admin-badge-warning' : 'admin-badge-muted'}`, team.blocked ? 'Blocked · 2 / 2' : team.violations ? `Warning · ${team.violations} / 2` : hasSignals ? 'Review signals' : 'No flags'));
-      row.append(identity, element('td', 'mono', focus), element('td', 'mono', tabs), element('td', 'mono', fullscreen), activity, status);
+      const action = element('td');
+      if (team.blocked) action.append(teamAction(team));
+      else action.textContent = '—';
+      row.append(identity, element('td', 'mono', focus), element('td', 'mono', tabs), element('td', 'mono', fullscreen), activity, status, action);
       return row;
     });
     target.replaceChildren(...rows);
@@ -244,6 +272,7 @@
       updateState(dashboard.event_state);
       updateActivity(dashboard.activity || []);
       updateSecurity(dashboard.security || []);
+      updateTeamAccess(dashboard.security || []);
       updateRoundControls();
       setConnected(true);
       if (currentPanel === 'rankings') await refreshLeaderboard();
@@ -290,7 +319,7 @@
     button.addEventListener('click', async () => {
       const action = button.dataset.eventAction;
       const confirmations = {
-        start: ['Start the debugging round?', `The ${state.duration_minutes || 40}-minute server timer will begin immediately and eligible teams will enter the arena.`, 'Start event'],
+        start: ['Start the debugging round?', `New team registration will close. The ${state.duration_minutes || 40}-minute timer and fullscreen rules will begin for registered teams.`, 'Start event'],
         pause: ['Pause the competition?', 'The clock will stop and submissions will be temporarily locked. Remaining time is preserved.', 'Pause event'],
         resume: ['Resume the competition?', 'The timer will continue from its remaining time and teams can submit again.', 'Resume event'],
         end: ['End the debugging round?', 'This closes all debugging submissions immediately. The round cannot be resumed after ending.', 'End event']
@@ -300,12 +329,22 @@
       await performAction(button, '/api/admin/event-action', { action }, ({ start: 'Starting…', pause: 'Pausing…', resume: 'Resuming…', end: 'Ending…' })[action]);
     });
   });
-  $$('[data-team-toggle]').forEach(button => button.addEventListener('click', async () => {
+  workspace.addEventListener('click', async event => {
+    const unban = event.target.closest('[data-team-unban]');
+    if (unban) {
+      if (actionInFlight) return;
+      const publishedNote = dashboard?.results_published ? ' This also restores their eligibility in the published rankings.' : '';
+      if (!await window.App.confirm(`Restore ${unban.dataset.teamName}? Their violations will reset to 0/2, and their saved answers and scores will be kept. They must enter fullscreen again to continue.${publishedNote}`, { title: 'Unban team', confirmText: 'Unban team' })) return;
+      await performAction(unban, '/api/admin/unban-team', { team_id: unban.dataset.teamUnban }, 'Restoring…');
+      return;
+    }
+    const button = event.target.closest('[data-team-toggle]');
+    if (!button || actionInFlight || button.disabled) return;
     const disable = button.dataset.active === '1';
     const verb = disable ? 'Disable' : 'Enable';
     if (!await window.App.confirm(`${verb} ${button.dataset.teamName}? ${disable ? 'Their competition access will be blocked and they will be excluded from the public rankings. Existing submissions are retained.' : 'Their competition access and public ranking eligibility will be restored.'}`, { title: `${verb} team`, confirmText: `${verb} team`, danger: disable })) return;
-    await performAction(button, '/api/admin/toggle-team', { team_id: button.dataset.teamToggle }, 'Updating…', true);
-  }));
+    await performAction(button, '/api/admin/toggle-team', { team_id: button.dataset.teamToggle }, 'Updating…');
+  });
   $$('[data-question-toggle]').forEach(button => button.addEventListener('click', async () => {
     const disable = button.dataset.active === '1';
     if (!await window.App.confirm(`${disable ? 'Disable' : 'Enable'} question ${button.dataset.questionToggle}? ${disable ? 'Disabled questions cannot receive new submissions. Review current assignments before proceeding.' : 'This question will become available in the active bank.'}`, { title: 'Update question availability', confirmText: disable ? 'Disable question' : 'Enable question', danger: disable })) return;

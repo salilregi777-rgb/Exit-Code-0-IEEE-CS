@@ -96,6 +96,10 @@
 .debugging-field-verdict { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
 .debugging-field-points { font: 11px var(--font-mono, monospace); }
 .debugging-field dd { margin: 10px 0 0; color: #c6bdc2; font: 12px/1.7 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-quiz-score .rapid-fire-cta { flex-shrink: 0; padding: 15px 23px; border: 2px solid #ff566b; color: #fff; background: #d90b2c; box-shadow: 0 0 0 4px #d90b2c20, 0 0 28px #ff244338; font-weight: 700; text-decoration: none; }
+.result-quiz-score .rapid-fire-cta:hover, .result-quiz-score .rapid-fire-cta:focus-visible { background: #f2173a; border-color: #ff9eab; box-shadow: 0 0 0 4px #d90b2c35, 0 0 34px #ff244355; }
+#quiz-feedback { scroll-margin-top: 90px; }
+#quiz-feedback-results { margin-top: 16px; }
 .debugging-review-modifiers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .debugging-review-modifiers span { padding: 6px 9px; border: 1px solid #583040; border-radius: 4px; color: #dbbac6; font-size: 11px; line-height: 1.6; }
 @media (max-width: 600px) {

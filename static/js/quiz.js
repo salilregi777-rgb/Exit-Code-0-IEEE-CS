@@ -32,6 +32,13 @@
 
   function renderFeedback() {
     const eligible = snapshot.started && (snapshot.completed || snapshot.status === 'CLOSED');
+    const feedbackSubmitted = !!snapshot.feedback?.submitted;
+    const canViewResults = feedbackSubmitted || (snapshot.status === 'CLOSED' && !snapshot.started);
+    show('quiz-results-link', canViewResults);
+    show('quiz-feedback-results', feedbackSubmitted);
+    const finishAction = byId('quiz-finish-action');
+    finishAction.href = canViewResults ? '/result' : '#quiz-feedback';
+    finishAction.textContent = canViewResults ? 'View debugging results →' : 'Feedback form →';
     show('quiz-feedback', eligible);
     if (!eligible) return;
     const questions = snapshot.feedback_questions || [];
@@ -158,6 +165,12 @@
     event.preventDefault();
     const radio = document.querySelector('#quiz-options input:checked');
     if (radio && currentID) action('/api/quiz/answer', { question_id: currentID, answer_index: Number(radio.value) });
+  });
+  byId('quiz-finish-action').addEventListener('click', event => {
+    if (event.currentTarget.getAttribute('href') !== '#quiz-feedback') return;
+    event.preventDefault();
+    byId('quiz-feedback').scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
+    byId('quiz-feedback-heading').focus({preventScroll: true});
   });
   byId('quiz-feedback-form').addEventListener('submit', sendFeedback);
   byId('quiz-feedback-note').addEventListener('input', () => { byId('quiz-feedback-length').textContent = byId('quiz-feedback-note').value.length; });

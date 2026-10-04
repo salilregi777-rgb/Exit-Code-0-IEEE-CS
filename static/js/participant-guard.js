@@ -15,6 +15,8 @@
   const fullscreen = () => !!document.fullscreenElement;
   const focused = () => !document.hidden && document.hasFocus();
   let active = false, armed = false, blocked = false, navigating = false, busy = false, activationID = null, poll;
+  let required = gate.dataset.required !== 'false';
+  const entryMessage = message.textContent;
   let resolveReady;
   const ready = new Promise(resolve => { resolveReady = resolve; });
   let pending = [];
@@ -33,19 +35,37 @@
   }
   function show() {
     active = false;
+    if (!required || navigating) return;
     if (!gate.open) gate.showModal();
     syncButton();
   }
+  function setRequired(value) {
+    const changed = required !== value;
+    required = value;
+    if (!required) {
+      active = false; armed = false; blocked = false; activationID = null;
+      pending = []; persist();
+      if (gate.open) gate.close();
+      syncButton(); resolveReady();
+    } else if (changed) show();
+  }
   function apply(state) {
+    if (typeof state.required === 'boolean') setRequired(state.required);
     count.textContent = `${state.violations || 0} / ${state.limit || 2} violations`;
+    if (!required) return;
     if (state.blocked) {
       blocked = true; armed = false; show(); button.hidden = true;
       title.textContent = 'Account blocked';
       message.textContent = 'Two fullscreen or focus violations were recorded. Your answers are saved, but this account cannot continue. Contact an organizer.';
       error.textContent = '';
-    } else if (state.violations) {
-      title.textContent = 'Competition warning';
-      message.textContent = 'One departure has been recorded. Another app switch, tab switch, or fullscreen exit will block this account. Keep this window focused and return to fullscreen.';
+    } else {
+      if (blocked) {
+        blocked = false; armed = false; activationID = null;
+        pending = []; persist(); button.hidden = false; button.disabled = false;
+        error.textContent = ''; show();
+      }
+      title.textContent = state.violations ? 'Competition warning' : 'Enter fullscreen';
+      message.textContent = state.violations ? 'One departure has been recorded. Another app switch, tab switch, or fullscreen exit will block this account. Keep this window focused and return to fullscreen.' : entryMessage;
     }
   }
   const report = body => App.request('/api/activity', {method: 'POST', body, keepalive: true});
@@ -67,7 +87,7 @@
     return flushTask;
   }
   async function enter() {
-    if (busy || blocked) return;
+    if (!required || busy || blocked) return;
     busy = true; button.disabled = true; error.textContent = '';
     try {
       if (!document.documentElement.requestFullscreen || document.fullscreenEnabled === false) throw new Error('This browser cannot enter fullscreen. Please use a supported desktop browser to participate.');
@@ -81,6 +101,7 @@
       const state = await signal('fullscreen_enter', enteringID, null);
       if (navigating) { await release(); return; }
       apply(state);
+      if (!required) return;
       if (!blocked && state.activation_id === enteringID && state.is_fullscreen && fullscreen() && focused() && !pending.length) {
         armed = true; active = true; gate.close(); syncButton(); resolveReady();
         document.dispatchEvent(new CustomEvent('participant:fullscreen-ready'));
@@ -100,7 +121,7 @@
     } finally { busy = false; button.disabled = blocked; }
   }
   function departure(event_type) {
-    if (!armed || navigating || blocked) return;
+    if (!required || !armed || navigating || blocked) return;
     // One physical switch often emits blur + hidden + fullscreenexit. Latch once.
     armed = false;
     pending.push({event_type, event_id: id(), activation_id: activationID, document_id: documentID, document_started_at: documentStartedAt});
@@ -119,7 +140,7 @@
     return true;
   }
   gate.addEventListener('cancel', e => e.preventDefault());
-  gate.addEventListener('close', () => { if (!active && !navigating) show(); });
+  gate.addEventListener('close', () => { if (required && !active && !navigating) show(); });
   button.addEventListener('click', enter);
   document.getElementById('fullscreen-toggle')?.addEventListener('click', enter);
   document.addEventListener('fullscreenchange', () => { if (!fullscreen()) departure('fullscreen_exit'); });
@@ -143,22 +164,27 @@
     if (!event.defaultPrevented) beginNavigation();
   });
   document.addEventListener('participant:blocked', event => apply(event.detail));
-  document.addEventListener('participant:fullscreen-required', () => { armed = false; show(); });
+  document.addEventListener('participant:fullscreen-required', () => { setRequired(true); armed = false; show(); });
+  document.addEventListener('eventstate', event => {
+    setRequired(event.detail.event_status !== 'WAITING');
+  });
   window.addEventListener('online', () => { flush().catch(() => {}); });
   async function check() {
-    if (navigating || blocked || document.hidden) return;
+    if (navigating || document.hidden) return;
     if (active && (!focused() || !fullscreen())) { departure(fullscreen() ? 'window_blur' : 'fullscreen_exit'); return; }
     const checkedActivation = active && !busy ? activationID : null;
     try {
       const state = await App.request('/api/fullscreen/status');
       apply(state);
+      if (required && !active && !busy) show();
       if (checkedActivation && !busy && active && checkedActivation === activationID && (!state.is_fullscreen || state.activation_id !== activationID)) { armed = false; show(); }
     } catch (err) { if (err.data?.blocked) apply(err.data); else if (err.status === 401) navigate('/register'); }
   }
   window.addEventListener('focus', check);
   poll = setInterval(check, 6000);
-  window.ParticipantGuard = {ready, enter, navigate, get active() {return active;}};
+  window.ParticipantGuard = {ready, enter, navigate, get active() {return active;}, get required() {return required;}};
   if (gate.open) gate.close();
+  setRequired(required);
   show();
   flush().then(check).catch(err => { if (err.data?.blocked) apply(err.data); else error.textContent = err.message; });
 })();

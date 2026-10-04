@@ -23,7 +23,7 @@ def test_twenty_teams_submit_independently_and_network_retries_are_idempotent():
             assert entered.status_code == 200
             payload = dict(question_id="Q01", request_id="same-request-per-team",
                            error_location="3", error_type="Logical Error", expected_output="10",
-                           cause="The loop stops before the last element.", correction="Use range(len(numbers))")
+                           correction="for i in range(len(numbers)):")
             first = client.post('/api/submit-bug-fix', json=payload)
             retry = client.post('/api/submit-bug-fix', json=payload)
             return first.status_code, first.get_json(), retry.get_json()

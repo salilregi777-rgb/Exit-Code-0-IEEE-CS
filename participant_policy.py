@@ -16,18 +16,34 @@ FEEDBACK_QUESTIONS = [
 ]
 
 
+def _guard_required(conn):
+    """Read the event state inside the transaction changing guard access."""
+    event = conn.execute("SELECT event_status FROM event_state WHERE id = 1").fetchone()
+    return bool(event and event["event_status"] != "WAITING")
+
+
+def _release_waiting_intervals(conn, team_id):
+    # An existing browser may still be armed by an earlier version of the site.
+    # None of those pre-event intervals can carry into the debugging round.
+    conn.execute("UPDATE fullscreen_sessions SET is_fullscreen = 0, active_event_id = NULL, document_id = NULL, document_started_at = 0 WHERE team_id = ?", (team_id,))
+
+
 def guard_snapshot(team_id):
     guard_id = session.get("guard_id")
     if not guard_id:
         guard_id = session["guard_id"] = uuid.uuid4().hex
     conn = get_db_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("INSERT OR IGNORE INTO participant_security(team_id) VALUES (?)", (team_id,))
         conn.execute("INSERT OR IGNORE INTO fullscreen_sessions(id, team_id) VALUES (?, ?)", (guard_id, team_id))
-        state = dict(conn.execute("SELECT violations, blocked FROM participant_security WHERE team_id = ?", (team_id,)).fetchone())
+        required = _guard_required(conn)
+        if not required:
+            _release_waiting_intervals(conn, team_id)
+        state = dict(conn.execute("SELECT s.violations, s.blocked, t.is_active AS team_active FROM participant_security s JOIN teams t ON t.id = s.team_id WHERE s.team_id = ?", (team_id,)).fetchone())
         row = conn.execute("SELECT is_fullscreen, active_event_id, document_id FROM fullscreen_sessions WHERE id = ? AND team_id = ?", (guard_id, team_id)).fetchone()
         conn.commit()
-        return {**state, "blocked": bool(state["blocked"]), "is_fullscreen": bool(row and row[0]), "limit": VIOLATION_LIMIT, "activation_id": row["active_event_id"] if row else None}
+        return {**state, "required": required, "blocked": bool(state["blocked"]), "team_active": bool(state["team_active"]), "is_fullscreen": bool(row and row[0]), "limit": VIOLATION_LIMIT, "activation_id": row["active_event_id"] if row else None}
     finally:
         conn.close()
 
@@ -44,6 +60,9 @@ def fullscreen_signal(team_id, event_type, event_id, activation_id=None, documen
     counted = False
     try:
         conn.execute("BEGIN IMMEDIATE")
+        required = _guard_required(conn)
+        if not required:
+            _release_waiting_intervals(conn, team_id)
         state = conn.execute("SELECT * FROM participant_security WHERE team_id = ?", (team_id,)).fetchone()
         current = conn.execute("SELECT * FROM fullscreen_sessions WHERE id = ? AND team_id = ?", (session["guard_id"], team_id)).fetchone()
         # Retain an old signed-in interval long enough to reconcile a queued
@@ -55,7 +74,10 @@ def fullscreen_signal(team_id, event_type, event_id, activation_id=None, documen
         duplicate = conn.execute("SELECT 1 FROM fullscreen_events WHERE team_id = ? AND event_id = ?", (team_id, event_id)).fetchone()
         recorded = not duplicate and not state["blocked"]
         if recorded:
+            # Remember ignored pre-event IDs too: a network retry arriving after
+            # the organizer starts must not activate an old fullscreen interval.
             conn.execute("INSERT INTO fullscreen_events(team_id, event_id, event_type) VALUES (?, ?, ?)", (team_id, event_id, event_type))
+        if recorded and required:
             matching = (not activation_id or activation_id == current["active_event_id"]) and (not document_id or document_id == current["document_id"])
             if event_type == "fullscreen_enter":
                 already_released = conn.execute("SELECT 1 FROM fullscreen_events WHERE team_id = ? AND event_id = ?", (team_id, "release-" + event_id)).fetchone()

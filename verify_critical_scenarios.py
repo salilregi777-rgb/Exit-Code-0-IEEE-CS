@@ -71,8 +71,7 @@ def run_critical_scenario_checks():
         "error_location": "Line 3",
         "error_type": "Logical Error",
         "expected_output": "10",
-        "cause": "Loop stops before processing last element due to len - 1.",
-        "correction": "Use range(len(numbers)) instead."
+        "correction": "for i in range(len(numbers)):"
     }
     res_sub, err_sub = process_submission(tid_a, "Q01", sub_payload)
     assert err_sub is None
@@ -138,8 +137,7 @@ def run_critical_scenario_checks():
         "error_location": "Line 3",
         "error_type": "Logical Error",
         "expected_output": "10",
-        "cause": "Loop stops before processing last element due to len - 1.",
-        "correction": "Use range(len(numbers)) instead."
+        "correction": "for i in range(len(numbers)):"
     }
     res_b, err_b = process_submission(tid_b, "Q01", sub_b)
     assert err_b is None

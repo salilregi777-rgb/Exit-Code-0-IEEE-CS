@@ -56,17 +56,18 @@ def team_required(f):
         generation = conn.execute("SELECT generation FROM competition_controls WHERE id = 1").fetchone()[0]
         conn.close()
         security = guard_snapshot(team_id) if team else None
-        if security and security["blocked"]:
+        blocked_status_check = request.path == "/api/fullscreen/status" and security and security["blocked"]
+        if security and security["blocked"] and not blocked_status_check:
             if request.path.startswith("/api/"):
                 return jsonify(success=False, blocked=True, error="Account blocked after two fullscreen or focus violations. Contact an organizer.", **{k: security[k] for k in ("violations", "limit")}), 403
             return redirect(url_for("participant_blocked"))
-        if not team or not team["is_active"] or session.get("generation", generation) != generation:
+        if not team or (not team["is_active"] and not blocked_status_check) or session.get("generation", generation) != generation:
             session.clear()
             if request.path.startswith("/api/"):
                 return jsonify(success=False, error="Your team session is no longer active. Contact an organizer."), 403
             return redirect(url_for("register"))
         protected = request.path == "/api/submit-bug-fix" or request.path.startswith("/api/powerup/") or request.path in ("/api/quiz/start", "/api/quiz/answer", "/api/quiz/feedback")
-        if protected and not security["is_fullscreen"]:
+        if protected and security["required"] and not security["is_fullscreen"]:
             return jsonify(success=False, fullscreen_required=True, error="Enter fullscreen to continue."), 403
         return f(*args, **kwargs)
     return decorated_function
@@ -75,7 +76,7 @@ def team_required(f):
 @app.before_request
 def validate_request():
     team_id = session.get("team_id")
-    if team_id and not request.path.startswith(("/static/", "/admin", "/api/admin")) and request.path not in ("/logout", "/blocked", "/register"):
+    if team_id and not request.path.startswith(("/static/", "/admin", "/api/admin")) and request.path not in ("/logout", "/blocked", "/register", "/api/fullscreen/status"):
         conn = get_db_connection()
         blocked = conn.execute("SELECT blocked FROM participant_security WHERE team_id = ?", (team_id,)).fetchone()
         conn.close()
@@ -178,6 +179,8 @@ def register():
             return redirect(url_for("waiting"))
 
         # Registration Flow: Exactly 2 to 3 members
+        if get_event_state()["event_status"] != "WAITING" or get_competition_controls()["results_published"]:
+            return render_template("register.html", error="Registration is closed because the event has started. Registered teams can still sign in."), 403
         name = request.form.get("name", "").strip()
         member1 = request.form.get("member1", "").strip()
         member2 = request.form.get("member2", "").strip()
@@ -191,7 +194,8 @@ def register():
 
         team_id, err = register_team(name, member1, member2, member3, email)
         if err:
-            return render_template("register.html", error=err)
+            closed = get_event_state()["event_status"] != "WAITING" or get_competition_controls()["results_published"]
+            return render_template("register.html", error=err), 403 if closed else 200
 
         session.clear()
         session["team_id"] = team_id
@@ -416,9 +420,12 @@ def api_submit_bug_fix():
     if not isinstance(question_id, str) or not question_id or len(question_id) > 40:
         return jsonify({"success": False, "error": "Question ID required."}), 400
 
-    for field in ("error_location", "error_type", "expected_output", "cause", "correction"):
+    for field in ("error_location", "error_type", "expected_output", "correction"):
         if not isinstance(data.get(field, ""), str) or len(data.get(field, "")) > 6000:
             return jsonify(success=False, error="Response fields must be text, up to 6,000 characters each."), 400
+    if "\n" in data.get("correction", "") or "\r" in data.get("correction", ""):
+        return jsonify(success=False, error="Enter the corrected line as a single line of code."), 400
+    data.pop("cause", None)
     request_id = data.get("request_id")
     if request_id is not None and (not isinstance(request_id, str) or not 1 <= len(request_id) <= 80):
         return jsonify(success=False, error="Invalid submission request identifier."), 400
@@ -565,6 +572,8 @@ def admin_dashboard():
     # All registered teams with member list & scores
     cur.execute("""
         SELECT t.id, t.name, t.created_at, t.is_active,
+               COALESCE(ps.blocked, 0) AS blocked,
+               COALESCE(ps.violations, 0) AS violations,
                COALESCE(s.score, 0) as score,
                COALESCE(s.completed_count, 0) as completed_count,
                (
@@ -574,6 +583,7 @@ def admin_dashboard():
                ) as members
         FROM teams t
         LEFT JOIN scores s ON t.id = s.team_id
+        LEFT JOIN participant_security ps ON ps.team_id = t.id
         ORDER BY t.created_at DESC
     """)
     teams = cur.fetchall()
@@ -691,6 +701,46 @@ def api_admin_override_score():
     log_admin_action("OVERRIDE_SCORE", f"Set submission #{sub_id} score to {new_sc}. Reason: {reason}")
     return jsonify({"success": True, "message": f"Submission #{sub_id} updated to {new_sc} points."})
 
+def _restore_team_access(conn, team_id):
+    """Clear enforcement without deleting submitted work or the audit trail."""
+    conn.execute("UPDATE teams SET is_active = 1 WHERE id = ?", (team_id,))
+    conn.execute("UPDATE participant_security SET blocked = 0, violations = 0 WHERE team_id = ?", (team_id,))
+    # Delayed departures from any old login must not affect a restored team.
+    conn.execute("""UPDATE fullscreen_sessions SET is_fullscreen = 0,
+                 active_event_id = NULL, document_id = NULL, document_started_at = 0
+                 WHERE team_id = ?""", (team_id,))
+
+
+@app.route("/api/admin/unban-team", methods=["POST"])
+@admin_required
+def api_admin_unban_team():
+    team_id = (request.get_json() or {}).get("team_id")
+    if not isinstance(team_id, str) or not team_id or len(team_id) > 40:
+        return jsonify(success=False, error="Team ID required."), 400
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        team = conn.execute("""SELECT t.name, t.is_active, COALESCE(ps.blocked, 0) AS blocked,
+                                   COALESCE(ps.violations, 0) AS violations
+                            FROM teams t LEFT JOIN participant_security ps ON ps.team_id = t.id
+                            WHERE t.id = ?""", (team_id,)).fetchone()
+        if not team:
+            return jsonify(success=False, error="Team not found."), 404
+        restored = bool(team["blocked"] or not team["is_active"])
+        if restored:
+            _restore_team_access(conn, team_id)
+            conn.execute("INSERT INTO admin_actions(action, details) VALUES (?, ?)",
+                         ("UNBAN_TEAM", f"Restored team {team_id}; violation count reset to 0/2. Saved work retained."))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify(success=True, team_id=team_id, blocked=False, is_active=True,
+                   violations=0 if restored else team["violations"],
+                   restored=restored,
+                   message=f"{team['name']} unbanned. Violations reset to 0/2; saved answers and scores retained."
+                   if restored else f"{team['name']} already has access.")
+
+
 @app.route("/api/admin/toggle-team", methods=["POST"])
 @admin_required
 def api_admin_toggle_team():
@@ -706,8 +756,7 @@ def api_admin_toggle_team():
     changed = cur.rowcount
     active = cur.execute("SELECT is_active FROM teams WHERE id = ?", (team_id,)).fetchone()
     if active and active[0]:
-        cur.execute("UPDATE participant_security SET blocked = 0, violations = 0 WHERE team_id = ?", (team_id,))
-        cur.execute("UPDATE fullscreen_sessions SET is_fullscreen = 0 WHERE team_id = ?", (team_id,))
+        _restore_team_access(conn, team_id)
     if changed == 0:
         conn.close()
         return jsonify(success=False, error="Team not found."), 404
@@ -808,6 +857,33 @@ def export_results_csv():
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=final_leaderboard.csv"}
     )
+
+@app.route("/admin/export/feedback.csv")
+@admin_required
+def export_feedback_csv():
+    import json
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("""SELECT f.*, t.name AS team_name
+            FROM quiz_feedback f JOIN teams t ON t.id = f.team_id
+            ORDER BY f.submitted_at, f.team_id""").fetchall()
+    finally:
+        conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Team ID", "Team Name", "Clarity", "Difficulty", "Interface",
+                     "Pacing", "Enjoyment", "Overall", "Feedback Note", "Submitted At"])
+    def csv_text(value):
+        text = str(value or "")
+        return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r")) else text
+    for row in rows:
+        ratings = json.loads(row["ratings_json"])
+        writer.writerow([row["team_id"], csv_text(row["team_name"]),
+                         *[ratings.get(question["id"], "") for question in FEEDBACK_QUESTIONS],
+                         csv_text(row["note"]), row["submitted_at"]])
+    return Response(output.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=participant_feedback.csv"})
+
 
 # --- Live participant and organizer APIs ---
 
@@ -1017,7 +1093,7 @@ def api_admin_dashboard_data():
         activity = [dict(r) for r in conn.execute("""SELECT a.event_type, a.question_id, a.created_at, t.name AS team_name
             FROM team_activity a JOIN teams t ON a.team_id = t.id WHERE a.event_type != 'heartbeat'
             ORDER BY a.id DESC LIMIT 30""")]
-        security = [dict(r) for r in conn.execute("""SELECT t.id AS team_id, t.name AS team_name,
+        security = [dict(r) for r in conn.execute("""SELECT t.id AS team_id, t.name AS team_name, t.is_active,
             SUM(CASE WHEN a.event_type = 'fullscreen_exit' THEN 1 ELSE 0 END) AS fullscreen_exits,
             SUM(CASE WHEN a.event_type = 'tab_hidden' THEN 1 ELSE 0 END) AS tab_switches,
             SUM(CASE WHEN a.event_type = 'window_blur' THEN 1 ELSE 0 END) AS focus_losses,

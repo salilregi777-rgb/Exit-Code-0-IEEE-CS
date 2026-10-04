@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,36 +11,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BANK = json.loads((ROOT / "data/questions.json").read_text())
-REPAIRS = {'Q01': ['range(len(numbers) - 1)', 'range(len(numbers))'],
- 'Q02': ['int count = 10\n', 'int count = 10;\n'],
- 'Q03': ['print(message', 'print(message)'],
- 'Q04': ['if num > 0\n', 'if num > 0:\n'],
- 'Q05': ['%.0f', '%.1f'],
- 'Q06': ['if (number = 0)', 'if (number == 0)'],
- 'Q07': ['    total = number', '    total += number'],
- 'Q08': ['i < 4', 'i < 5'],
- 'Q09': ['average = total / count', 'average = (double) total / count'],
- 'Q10': ['return user_val * 2', 'return int(user_val) * 2'],
- 'Q11': ['"Age: %d\\n", year', '"Age: %d\\n", age'],
- 'Q12': ['numbers[3]', 'numbers[2]'],
- 'Q13': ['item + multiplier', 'item * multiplier'],
- 'Q14': ['printf("SUCCESS");', 'printf("SUCCESS"); break;'],
- 'Q15': ['print(name.upper)', 'print(name.upper())'],
- 'Q16': ['scores.student = val', 'scores[student] = val'],
- 'Q17': ['    add(3, 4);', '    result = add(3, 4);'],
- 'Q18': ['        return answer', '    return answer'],
- 'Q19': ['    number * number', '    return number * number'],
- 'Q20': ['word[1]', 'word[0]'],
- 'Q21': ['score > 50', 'score >= 50'],
- 'Q22': ['        pass', '        return 0'],
- 'Q23': ['%.3s', '%s'],
- 'Q24': ['word[1:3]', 'word[0:3]'],
- 'Q25': ['backup = original\n', 'backup = original.copy()\n'],
- 'Q26': ['2 + 3 * 4', '(2 + 3) * 4'],
- 'Q27': ['number % 2 == 1', 'number % 2 == 0'],
- 'Q28': ['first + second', 'int(first) + int(second)'],
- 'Q29': ['i++);', 'i++)'],
- 'Q30': ['number >= 1 || number <= 10', 'number >= 1 && number <= 10']}
 
 
 def test_bank_languages_ids_and_descriptive_keywords():
@@ -52,9 +23,14 @@ def test_bank_languages_ids_and_descriptive_keywords():
 
 @pytest.mark.parametrize("question", BANK, ids=lambda q: q["id"])
 def test_corrected_program_matches_answer_key(question, tmp_path):
-    old, new = REPAIRS[question["id"]]
-    assert question["code"].count(old) == 1, "Repair must identify a single location"
-    corrected = question["code"].replace(old, new)
+    lines = question["code"].splitlines()
+    location = int(re.search(r"\d+", question["bug_location"]).group()) - 1
+    correction = question["correction"]
+    assert correction.strip() and "\n" not in correction and "\r" not in correction
+    assert 0 <= location < len(lines)
+    assert lines[location] != correction
+    lines[location] = correction
+    corrected = "\n".join(lines)
     if question["language"] == "Python":
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -73,18 +49,18 @@ def test_corrected_program_matches_answer_key(question, tmp_path):
 
 
 @pytest.mark.parametrize("question", BANK, ids=lambda q: q["id"])
-def test_reference_descriptions_meet_keyword_rule(question):
+def test_reference_code_line_receives_full_credit(question):
     from scoring import evaluate_submission
     answer = {field: question[field] for field in ("error_type", "expected_output", "cause", "correction")}
     answer["error_location"] = question["bug_location"]
     evaluation = evaluate_submission(question, answer)
     assert evaluation["raw_score"] == question["points"]
-    assert evaluation["keyword_matches"]["cause"] >= 2
-    assert evaluation["keyword_matches"]["correction"] >= 2
+    assert len(evaluation["field_results"]) == 4
+    assert all(field["status"] == "correct" for field in evaluation["field_results"])
 
 
 def test_bank_migration_preserves_competition_data_and_organizer_edits():
-    from database import init_db, register_team, get_db_connection
+    from database import init_db, register_team, get_db_connection, QUESTION_BANK_VERSION
     from scoring import process_submission
     init_db(force_reset=True)
     team_id, error = register_team("Migration preservation", "One", "Two")
@@ -96,7 +72,7 @@ def test_bank_migration_preserves_competition_data_and_organizer_edits():
     assert error is None
     conn = get_db_connection()
     conn.execute("UPDATE questions SET language='Java', code='old code', is_active=0 WHERE id='Q03'")
-    conn.execute("DELETE FROM data_migrations WHERE name='c-python-beginner-bank-v1'")
+    conn.execute("DELETE FROM data_migrations WHERE name = ?", (QUESTION_BANK_VERSION,))
     conn.commit()
     conn.close()
     init_db()

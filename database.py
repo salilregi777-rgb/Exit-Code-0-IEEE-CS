@@ -2,10 +2,36 @@ import sqlite3
 import json
 import os
 import uuid
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from config import Config
 from answer_feedback import answer_field_results
+
+QUESTION_BANK_VERSION = "c-python-single-line-bank-v2"
+
+
+def balanced_question_order(questions):
+    """One shared, reproducible shuffle: a difficult question inside each six."""
+    rng = random.Random("exit-code-0-single-line-1")
+    regular = [q for q in questions if q["difficulty"] != "Difficult"]
+    difficult = [q for q in questions if q["difficulty"] == "Difficult"]
+    rng.shuffle(regular)
+    rng.shuffle(difficult)
+    # Retain the familiar introductory challenge, then mix the remaining bank.
+    introductory = next((q for q in regular if q["id"] == "Q01"), None)
+    if introductory is not None:
+        regular.remove(introductory)
+        regular.insert(0, introductory)
+    ordered = []
+    for start in range(0, len(regular), 5):
+        block = regular[start:start + 5]
+        if difficult:
+            block.insert(min(len(block), rng.choice((2, 3))), difficult.pop())
+        ordered.extend(block)
+    # Organisers can deactivate questions; retain every remaining active item.
+    ordered.extend(difficult)
+    return ordered
 
 def get_db_connection():
     db_path = Config.DATABASE_PATH
@@ -89,8 +115,27 @@ def init_db(force_reset=False):
     for name in ("cause_keywords", "correction_keywords"):
         if name not in question_columns:
             conn.execute(f"ALTER TABLE questions ADD COLUMN {name} TEXT")
-    bank_version = "c-python-beginner-bank-v1"
+    bank_version = QUESTION_BANK_VERSION
     if not conn.execute("SELECT 1 FROM data_migrations WHERE name = ?", (bank_version,)).fetchone():
+        # Preserve historical review maxima before question point values change.
+        for old in conn.execute("""SELECT s.*, q.points AS previous_points FROM submissions s
+                JOIN questions q ON q.id = s.question_id""").fetchall():
+            try:
+                saved = json.loads(old["response_json"] or "{}")
+            except (TypeError, ValueError):
+                saved = {}
+            if not isinstance(saved, dict):
+                saved = {}
+            saved.setdefault("base_points", old["previous_points"])
+            penalties = saved.get("penalties") or {}
+            if not isinstance(penalties, dict):
+                penalties = {}
+            penalty_total = penalties.get("total", penalties.get("hint", 0) + penalties.get("swap", 0))
+            saved.setdefault("max_score", max(0, saved["base_points"] * (2 if old["is_double_commit"] else 1)
+                             - penalty_total))
+            raw = sum(old[key] for key in ("error_loc_score", "error_type_score", "cause_score", "output_score", "correction_score"))
+            saved.setdefault("answer_status", "correct" if raw >= saved["base_points"] else "partial" if raw > 0 else "incorrect")
+            conn.execute("UPDATE submissions SET response_json = ? WHERE id = ?", (json.dumps(saved), old["id"]))
         with open(Config.QUESTIONS_JSON_PATH, encoding="utf-8") as f:
             questions = json.load(f)
         for q in questions:
@@ -108,6 +153,17 @@ def init_db(force_reset=False):
                  q["error_type"], q["bug_location"], q["expected_output"], q["cause"], q["correction"],
                  q.get("points", q.get("base_points", 20)), q.get("hint", ""),
                  json.dumps(q.get("cause_keywords", [])), json.dumps(q.get("correction_keywords", []))))
+        waiting = conn.execute("""SELECT 1 FROM event_state WHERE id = 1
+            AND event_status = 'WAITING' AND event_start_time IS NULL""").fetchone()
+        if waiting:
+            untouched = conn.execute("""SELECT id FROM teams t
+                WHERE NOT EXISTS (SELECT 1 FROM submissions s WHERE s.team_id = t.id)
+                AND NOT EXISTS (SELECT 1 FROM question_assignments qa WHERE qa.team_id = t.id
+                  AND (qa.is_completed = 1 OR qa.is_abandoned = 1))
+                AND NOT EXISTS (SELECT 1 FROM powerups p WHERE p.team_id = t.id AND p.is_used = 1)""").fetchall()
+            for team in untouched:
+                conn.execute("DELETE FROM question_assignments WHERE team_id = ?", (team["id"],))
+                assign_initial_questions(team["id"], cur)
         conn.execute("INSERT INTO data_migrations(name) VALUES (?)", (bank_version,))
 
     conn.commit()
@@ -163,6 +219,11 @@ def register_team(team_name, member1, member2, member3=None, email=None, passwor
         conn.execute("BEGIN IMMEDIATE")
         if cur.execute("SELECT results_published FROM competition_controls WHERE id = 1").fetchone()[0]:
             return None, "Registration is closed because final results have been published."
+        # Share the write lock used by start_event: a form opened before the
+        # start cannot create a team after the organiser has started the round.
+        state = cur.execute("SELECT event_status FROM event_state WHERE id = 1").fetchone()
+        if not state or state["event_status"] != "WAITING":
+            return None, "Registration is closed because the event has started. Registered teams can still sign in."
         # Check duplicate name
         cur.execute("SELECT id FROM teams WHERE UPPER(name) = UPPER(?)", (name,))
         if cur.fetchone():
@@ -200,7 +261,7 @@ def register_team(team_name, member1, member2, member3=None, email=None, passwor
 
 def assign_initial_questions(team_id, cur=None):
     """
-    Assigns questions sequentially for the team.
+    Assigns the stable shared difficulty-balanced order for the team.
     Q01 is unlocked immediately, subsequent questions unlock progressively upon submission.
     """
     close_conn = False
@@ -214,8 +275,8 @@ def assign_initial_questions(team_id, cur=None):
         if cur.fetchone()["c"] > 0:
             return
 
-        cur.execute("SELECT id FROM questions WHERE is_active = 1 ORDER BY id ASC")
-        questions = cur.fetchall()
+        cur.execute("SELECT id, difficulty FROM questions WHERE is_active = 1 ORDER BY id ASC")
+        questions = balanced_question_order(cur.fetchall())
 
         for order, q in enumerate(questions, 1):
             is_unlocked = 1 if order == 1 else 0
@@ -249,7 +310,7 @@ def _answer_summary(conn, team_id, question_id, points, include_submission=False
         for key in ("hint_used", "swap_used", "is_double_commit"):
             result[key] = evaluation.get(key, 0)
         if include_submission:
-            result["submission"] = {key: row[key] for key in ("error_location", "error_type", "expected_output", "cause", "correction")}
+            result["submission"] = {key: row[key] for key in ("error_location", "error_type", "expected_output", "correction")}
     return result
 
 
