@@ -61,7 +61,9 @@ def team_required(f):
             if request.path.startswith("/api/"):
                 return jsonify(success=False, blocked=True, error="Account blocked after two fullscreen or focus violations. Contact an organizer.", **{k: security[k] for k in ("violations", "limit")}), 403
             return redirect(url_for("participant_blocked"))
-        if not team or (not team["is_active"] and not blocked_status_check) or session.get("generation", generation) != generation:
+        # Active and blocked must come from the same transactional snapshot. An
+        # unban between the first lookup and guard_snapshot can change both.
+        if not team or (not security["team_active"] and not blocked_status_check) or session.get("generation", generation) != generation:
             session.clear()
             if request.path.startswith("/api/"):
                 return jsonify(success=False, error="Your team session is no longer active. Contact an organizer."), 403

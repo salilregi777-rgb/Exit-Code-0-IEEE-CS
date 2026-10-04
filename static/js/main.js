@@ -81,17 +81,56 @@
     set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (_) { return false; } },
     remove(key) { try { localStorage.removeItem(key); } catch (_) { /* Storage can be unavailable in private mode. */ } }
   };
-  window.App = { request, toast, confirm: confirmAction, setConnection, storage, eventState: null };
+  function createPageScope() {
+    let active = true;
+    const cleanups = [], timeouts = new Set(), intervals = new Set();
+    // Stale responses must never write into another page with similar element IDs.
+    const stopped = () => new Promise(() => {});
+    return {
+      get active() { return active; },
+      listen(target, type, callback, options) {
+        const listener = (...args) => { if (active) callback(...args); };
+        target.addEventListener(type, listener, options);
+        cleanups.push(() => target.removeEventListener(type, listener, options));
+      },
+      setTimeout(callback, delay) {
+        const timer = window.setTimeout(() => { timeouts.delete(timer); if (active) callback(); }, delay);
+        timeouts.add(timer); return timer;
+      },
+      setInterval(callback, delay) {
+        const timer = window.setInterval(() => { if (active) callback(); }, delay);
+        intervals.add(timer); return timer;
+      },
+      request(...args) {
+        if (!active) return stopped();
+        return request(...args).then(value => active ? value : stopped(), err => { if (!active) return stopped(); throw err; });
+      },
+      onCleanup(callback) { cleanups.push(callback); },
+      dispose() {
+        if (!active) return;
+        // Draft savers run while their original fields are still attached.
+        cleanups.forEach(cleanup => cleanup()); active = false;
+        timeouts.forEach(window.clearTimeout); intervals.forEach(window.clearInterval);
+        cleanups.length = 0; timeouts.clear(); intervals.clear();
+      }
+    };
+  }
+
+  window.App = { createPageScope, request, toast, confirm: confirmAction, setConnection, storage, eventState: null };
+  App.page = createPageScope();
   window.showToast = toast;
   const init = () => {
+    const page = App.page;
     const toggle = document.querySelector('.nav-toggle');
     toggle?.addEventListener('click', () => { const open = toggle.getAttribute('aria-expanded') !== 'true'; toggle.setAttribute('aria-expanded', String(open)); document.getElementById('site-navigation').classList.toggle('open', open); });
     if ('IntersectionObserver' in window && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
       document.documentElement.classList.add('js-reveal');
       const observer = new IntersectionObserver(entries => entries.forEach(entry => { if (entry.isIntersecting) { entry.target.classList.add('visible'); observer.unobserve(entry.target); } }), { threshold: 0.06 });
       document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+      page.onCleanup(() => observer.disconnect());
     }
-    document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog && !['competition-dialog', 'participant-gate'].includes(dialog.id)) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
+    document.querySelectorAll('dialog').forEach(dialog => page.listen(dialog, 'click', event => { if (event.target === dialog && !['competition-dialog', 'participant-gate'].includes(dialog.id)) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
   };
+  App.initPage = init;
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

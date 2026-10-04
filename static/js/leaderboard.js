@@ -1,4 +1,6 @@
 (() => {
+  const page = App.page;
+  const {setInterval, setTimeout} = page;
  'use strict';
  const byId=id=>document.getElementById(id);let pending=false,previous=new Map(),signature='',movement=new Map();
  function el(tag,cls,text){const n=document.createElement(tag);n.className=cls||'';if(text!==undefined)n.textContent=text;return n;}
@@ -16,6 +18,6 @@
    const row=el('tr',own?'own-team':'');row.dataset.teamId=team.id;if(old!==undefined&&old!==rank)row.classList.add('rank-changed');const rankCell=el('td','rank-cell',String(rank).padStart(2,'0'));const move=movement.get(team.id);if(move&&move.until>performance.now())rankCell.append(el('span',move.delta>0?'rank-movement rank-up':'rank-movement rank-down',`${move.delta>0?'↑':'↓'} ${Math.abs(move.delta)}`));const teamCell=el('td','team-cell');const identity=el('div','');identity.append(el('strong','',team.name),el('small','mono muted',team.id));teamCell.append(identity);if(own)teamCell.append(el('span','badge badge-primary','YOU'));row.append(rankCell,teamCell,el('td','mono',team.completed_count),el('td','score-cell mono',Number(team.score).toLocaleString()));const status=el('td');status.append(el('span','badge',mode==='FINAL'?'FINAL':data.event_status==='COMPLETED'?'LOCKED':data.event_status==='PAUSED'?'PAUSED':team.completed_count?'COMPETING':'READY'));row.append(status);body.append(row);
   });previous=new Map(data.leaderboard.map((t,i)=>[t.id,i+1]));
  }
- async function refresh(){if(pending)return;pending=true;const button=byId('refresh-leaderboard');button.disabled=true;button.classList.add('loading');try{render(await App.request('/api/leaderboard-data'));}catch(err){byId('lb-updated').textContent='Reconnecting…';if(!previous.size){byId('leaderboard-podium').hidden=true;byId('leaderboard-table-body').replaceChildren();const row=el('tr');const cell=el('td','table-empty',err.message+' Use Refresh to retry.');cell.colSpan=5;row.append(cell);byId('leaderboard-table-body').append(row);}}finally{pending=false;button.disabled=false;button.classList.remove('loading');}}
+ async function refresh(){if(pending)return;pending=true;const button=byId('refresh-leaderboard');button.disabled=true;button.classList.add('loading');try{render(await page.request('/api/leaderboard-data'));}catch(err){byId('lb-updated').textContent='Reconnecting…';if(!previous.size){byId('leaderboard-podium').hidden=true;byId('leaderboard-table-body').replaceChildren();const row=el('tr');const cell=el('td','table-empty',err.message+' Use Refresh to retry.');cell.colSpan=5;row.append(cell);byId('leaderboard-table-body').append(row);}}finally{pending=false;button.disabled=false;button.classList.remove('loading');}}
  byId('refresh-leaderboard').addEventListener('click',refresh);refresh();setInterval(()=>{if(!document.hidden)refresh();document.querySelectorAll('.rank-movement').forEach(n=>{const id=n.closest('tr').dataset.teamId;if((movement.get(id)?.until||0)<performance.now())n.remove();});},5000);
 })();

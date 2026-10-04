@@ -47,4 +47,4 @@
   <div class="action-row result-actions"><a href="/leaderboard" class="btn btn-primary">View full leaderboard <span aria-hidden="true">↗</span></a><a href="{{ '/arena' if event_state.event_status != 'COMPLETED' and team else '/' }}" class="btn btn-secondary">{{ 'Return to arena' if event_state.event_status != 'COMPLETED' and team else 'Event home' }}</a></div>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/results.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script data-page-script src="{{ url_for('static', filename='js/results.js') }}" defer></script>{% endblock %}

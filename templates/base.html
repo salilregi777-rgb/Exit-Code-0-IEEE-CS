@@ -69,6 +69,7 @@
   <script src="{{ url_for('static', filename='js/timer.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/interactions.js') }}" defer></script>
   <script src="{{ url_for('static', filename='dist/react-bits.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/navigation.js') }}" defer></script>
   {% if session.get('team_id') and not request.path.startswith('/admin') and request.path != '/blocked' %}
   <script src="{{ url_for('static', filename='js/participant-guard.js') }}" defer></script>
   {% endif %}

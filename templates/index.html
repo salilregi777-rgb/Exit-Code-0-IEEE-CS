@@ -64,4 +64,4 @@
   <section class="closing-cta reveal" data-border-glow><div><p class="eyebrow">YOUR NEXT CHALLENGE / EXIT CODE 0</p><h2>Ready to debug?</h2><p>Bring a team of 2–3. Leave with a clean exit.</p></div><a class="btn btn-primary btn-large" href="{{ '/arena' if session.get('team_id') else '/register' }}">Enter the arena <span aria-hidden="true">↗</span></a></section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/landing.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script data-page-script src="{{ url_for('static', filename='js/landing.js') }}" defer></script>{% endblock %}

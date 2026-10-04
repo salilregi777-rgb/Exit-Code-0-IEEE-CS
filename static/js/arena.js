@@ -1,5 +1,7 @@
 /* Participant state stays server-controlled; only unsent drafts and review flags are local. */
 (() => {
+  const page = App.page;
+  const {setInterval, setTimeout} = page;
   'use strict';
   const fields = ['error_location', 'error_type', 'expected_output', 'correction'];
   let root, form, qid, progress, generation, draftKey, dirty = false, busy = false, switching = false, submitted = false, requestID = null, reviews = {}, saveTimeout, syncPending = false, loadSerial = 0;
@@ -143,7 +145,7 @@
     if (syncPending) return;
     syncPending = true;
     try {
-      const data = await App.request('/api/team-progress');
+      const data = await page.request('/api/team-progress');
       if (generation && data.generation !== generation) { navigate('/register'); return; }
       generation = data.generation; renderProgress(data); return data;
     } catch (err) { if (err.status === 401 || err.status === 403) { byId('arena-state-notice').hidden = false; byId('arena-state-notice').textContent = err.message; progress = null; updateControls(); } }
@@ -155,16 +157,17 @@
     const serial = ++loadSerial;
     document.querySelector('.arena-workspace').classList.add('is-loading');
     try {
-      const data = await App.request(`/api/question/${encodeURIComponent(id)}`);
+      const data = await page.request(`/api/question/${encodeURIComponent(id)}`);
       if (serial !== loadSerial) return;
       const q = data.question; submitted = false; qid = q.id;
       const known = current(); if (known) Object.assign(known, q); byId('form-question-id').value = qid;
-      byId('breadcrumb-question').textContent = qid; byId('question-title').textContent = q.title; byId('question-difficulty').textContent = q.difficulty; byId('question-points').textContent = `${q.points} PTS`; byId('source-language').textContent = q.language;
+      byId('breadcrumb-question').textContent = qid; byId('question-title').textContent = q.title; byId('question-task').textContent = q.task || ''; byId('question-difficulty').textContent = q.difficulty; byId('question-points').textContent = `${q.points} PTS`; byId('source-language').textContent = q.language;
       byId('source-filename').textContent = ({ Python: 'main.py', C: 'main.c' })[q.language] || 'source';
       byId('challenge-number').textContent = `CHALLENGE ${String(current()?.question_order || qid).padStart(2, '0')}`;
       CodeEditor.render(q.code); restoreDraft(); hydrateSubmission(q); byId('rubber-duck-hint-box').hidden = true;
       if (progress) renderProgress(progress);
       if (push) history.pushState({ question: qid }, '', `/arena?q=${encodeURIComponent(qid)}`);
+      App.navigation?.trackLocation();
       document.title = `${qid} · Debug Arena — EXIT CODE 0`;
     } catch (err) { App.toast(err.message, 'error'); }
     finally { switching = false; document.querySelector('.arena-workspace').classList.remove('is-loading'); updateControls(); }
@@ -182,13 +185,15 @@
   async function submit(event) {
     event.preventDefault(); if (busy || isAnswered() || !canSubmit() || !progress || !validate()) return;
     busy = true; updateControls();
-    if (!await App.confirm('Your answer will be scored and locked. You cannot edit or submit this question again.', { title: 'Lock this answer?', confirmText: 'Lock answer' })) { busy = false; updateControls(); return; }
+    const confirmed = await App.confirm('Your answer will be scored and locked. You cannot edit or submit this question again.', { title: 'Lock this answer?', confirmText: 'Lock answer' });
+    if (!page.active) return;
+    if (!confirmed) { busy = false; updateControls(); return; }
     if (isAnswered() || !canSubmit()) { busy = false; updateControls(); return; }
     requestID ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
     dirty = true; saveDraft(); updateControls();
     const activity = App.activity(byId('submission-trace'), 'Waiting for server validation…');
     try {
-      const data = await App.request('/api/submit-bug-fix', { method: 'POST', body: { question_id: qid, request_id: requestID, ...value() } });
+      const data = await page.request('/api/submit-bug-fix', { method: 'POST', body: { question_id: qid, request_id: requestID, ...value() } });
       activity.finish(true, 'Submission recorded');
       submitted = true; dirty = false; App.storage.remove(draftKey); requestID = null;
       const result = { ...data.result, is_answered: true, is_completed: true, awarded_score: data.result.total_score };
@@ -215,9 +220,10 @@
     const type = button.dataset.powerup;
     const descriptions = { 'rubber-duck': ['Use Rubber Duck?', 'Reveal one hint. This deducts 10% of the base points from this challenge’s scored submission.'], 'git-revert': ['Replace this challenge?', 'Git Revert replaces this challenge permanently. The replacement has a 10% base-point penalty. Any hint penalty carries over. You can use it once.'], 'double-commit': ['Arm Double Commit?', 'Your next submission scores 2× if it earns at least 60% accuracy; otherwise it scores zero. You can use this once.'] };
     if (!await App.confirm(descriptions[type][1], { title: descriptions[type][0], confirmText: 'Activate' })) return;
+    if (!page.active) return;
     busy = true; updateControls(); button.classList.add('loading');
     try {
-      const data = await App.request(`/api/powerup/${type}`, { method: 'POST', body: { question_id: qid } });
+      const data = await page.request(`/api/powerup/${type}`, { method: 'POST', body: { question_id: qid } });
       App.toast(data.message, 'success');
       if (data.hint) { byId('rubber-duck-hint-box').textContent = data.hint; byId('rubber-duck-hint-box').hidden = false; }
       await syncProgress();
@@ -245,17 +251,18 @@
     byId('next-question').addEventListener('click', () => selectQuestion(byId('next-question').dataset.next));
     byId('review-toggle').addEventListener('click', () => { reviews[qid] = !reviews[qid]; App.storage.set(`${draftNamespace()}reviews`, reviews); if (progress) renderProgress(progress); else updateReview(); });
     document.querySelectorAll('[data-powerup]').forEach(button => button.addEventListener('click', () => usePowerup(button)));
-    document.addEventListener('eventstate', event => onState(event.detail));
-    window.addEventListener('pagehide', saveDraft);
-    window.addEventListener('popstate', () => { const target = new URLSearchParams(location.search).get('q') || progress?.questions.find(q => q.is_unlocked && !q.is_completed)?.id || progress?.questions[0]?.id; selectQuestion(target, false); });
-    document.addEventListener('visibilitychange', () => { if (document.hidden) saveDraft(); else syncProgress(); });
+    page.listen(document, 'eventstate', event => onState(event.detail));
+    page.listen(window, 'pagehide', saveDraft);
+    page.onCleanup(saveDraft);
+    page.listen(window, 'popstate', () => { if (location.pathname !== '/arena') return; const target = new URLSearchParams(location.search).get('q') || progress?.questions.find(q => q.is_unlocked && !q.is_completed)?.id || progress?.questions[0]?.id; selectQuestion(target, false); });
+    page.listen(document, 'visibilitychange', () => { if (document.hidden) saveDraft(); else syncProgress(); });
     updateControls();
     const data = await syncProgress();
     if (data) { reviews = App.storage.get(`${draftNamespace()}reviews`, {}); restoreDraft();
-      if (isAnswered()) { const initialID = qid; try { const answer = await App.request(`/api/question/${encodeURIComponent(initialID)}`); if (qid === initialID) hydrateSubmission(answer.question); } catch (_) { /* Score and answer lock remain visible during a network failure. */ } } }
+      if (isAnswered()) { const initialID = qid; try { const answer = await page.request(`/api/question/${encodeURIComponent(initialID)}`); if (qid === initialID) hydrateSubmission(answer.question); } catch (_) { /* Score and answer lock remain visible during a network failure. */ } } }
     else { byId('draft-status').textContent = 'Reconnect to enable saved drafts'; }
     if (App.eventState) onState(App.eventState);
     setInterval(async () => { if (!document.hidden) { const first = !generation; const data = await syncProgress(); if (first && data) { reviews = App.storage.get(`${draftNamespace()}reviews`, {}); if (dirty) { setDraftKey(); saveDraft(); } else restoreDraft(); } } }, 10000);
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+  if (document.readyState === 'loading') page.listen(document, 'DOMContentLoaded', init); else init();
 })();

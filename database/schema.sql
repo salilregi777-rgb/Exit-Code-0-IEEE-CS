@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS questions (
     id TEXT PRIMARY KEY,
     language TEXT NOT NULL,
     title TEXT NOT NULL,
+    task TEXT NOT NULL DEFAULT '',
     difficulty TEXT NOT NULL,
     code TEXT NOT NULL,
     error_type TEXT NOT NULL,

@@ -6,7 +6,7 @@ from database import init_db, register_team, get_db_connection, get_competition_
 from event_manager import start_event, reset_event_data
 
 
-def test_twenty_teams_submit_independently_and_network_retries_are_idempotent():
+def test_twenty_teams_submit_independently_and_network_retries_are_idempotent(ordered_bank):
     init_db(force_reset=True)
     teams = [register_team(f"Concurrent {i}", "Member A", "Member B")[0] for i in range(20)]
     start_event()

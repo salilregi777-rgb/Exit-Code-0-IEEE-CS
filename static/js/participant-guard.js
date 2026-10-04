@@ -135,6 +135,7 @@
   }
   function beginNavigation() { navigating = true; armed = false; active = false; }
   function navigate(url, {replace = false} = {}) {
+    if (App.navigation?.canNavigate(new URL(url, location.href))) return App.navigation.navigate(url, {replace});
     beginNavigation();
     replace ? location.replace(url) : location.assign(url);
     return true;
@@ -142,7 +143,8 @@
   gate.addEventListener('cancel', e => e.preventDefault());
   gate.addEventListener('close', () => { if (required && !active && !navigating) show(); });
   button.addEventListener('click', enter);
-  document.getElementById('fullscreen-toggle')?.addEventListener('click', enter);
+  document.addEventListener('click', event => { if (event.target.closest?.('#fullscreen-toggle')) enter(); });
+  document.addEventListener('participant:page-ready', syncButton);
   document.addEventListener('fullscreenchange', () => { if (!fullscreen()) departure('fullscreen_exit'); });
   window.addEventListener('blur', () => departure('window_blur'));
   document.addEventListener('visibilitychange', () => { if (document.hidden) departure('tab_hidden'); else check(); });
@@ -182,7 +184,7 @@
   }
   window.addEventListener('focus', check);
   poll = setInterval(check, 6000);
-  window.ParticipantGuard = {ready, enter, navigate, get active() {return active;}, get required() {return required;}};
+  window.ParticipantGuard = {ready, enter, navigate, leaveForNavigation: beginNavigation, get active() {return active;}, get required() {return required;}};
   if (gate.open) gate.close();
   setRequired(required);
   show();

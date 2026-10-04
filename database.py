@@ -8,21 +8,17 @@ from pathlib import Path
 from config import Config
 from answer_feedback import answer_field_results
 
-QUESTION_BANK_VERSION = "c-python-single-line-bank-v2"
+QUESTION_BANK_VERSION = "c-python-explicit-tasks-team-shuffle-v3"
+PUBLIC_QUESTION_FIELDS = ("language", "title", "task", "difficulty", "points", "code")
 
 
 def balanced_question_order(questions):
-    """One shared, reproducible shuffle: a difficult question inside each six."""
-    rng = random.Random("exit-code-0-single-line-1")
+    """Create a fresh team order, keeping a difficult question inside each six."""
+    rng = random.SystemRandom()
     regular = [q for q in questions if q["difficulty"] != "Difficult"]
     difficult = [q for q in questions if q["difficulty"] == "Difficult"]
     rng.shuffle(regular)
     rng.shuffle(difficult)
-    # Retain the familiar introductory challenge, then mix the remaining bank.
-    introductory = next((q for q in regular if q["id"] == "Q01"), None)
-    if introductory is not None:
-        regular.remove(introductory)
-        regular.insert(0, introductory)
     ordered = []
     for start in range(0, len(regular), 5):
         block = regular[start:start + 5]
@@ -115,9 +111,13 @@ def init_db(force_reset=False):
     for name in ("cause_keywords", "correction_keywords"):
         if name not in question_columns:
             conn.execute(f"ALTER TABLE questions ADD COLUMN {name} TEXT")
+    if "task" not in question_columns:
+        conn.execute("ALTER TABLE questions ADD COLUMN task TEXT NOT NULL DEFAULT ''")
     bank_version = QUESTION_BANK_VERSION
     if not conn.execute("SELECT 1 FROM data_migrations WHERE name = ?", (bank_version,)).fetchone():
-        # Preserve historical review maxima before question point values change.
+        # Preserve the source that existing submissions actually answered, as well
+        # as historical maxima. Never put reference answers into this snapshot.
+        previous_questions = {row["id"]: dict(row) for row in conn.execute("SELECT * FROM questions")}
         for old in conn.execute("""SELECT s.*, q.points AS previous_points FROM submissions s
                 JOIN questions q ON q.id = s.question_id""").fetchall():
             try:
@@ -126,6 +126,8 @@ def init_db(force_reset=False):
                 saved = {}
             if not isinstance(saved, dict):
                 saved = {}
+            saved.setdefault("question_snapshot", {key: previous_questions[old["question_id"]][key]
+                for key in PUBLIC_QUESTION_FIELDS})
             saved.setdefault("base_points", old["previous_points"])
             penalties = saved.get("penalties") or {}
             if not isinstance(penalties, dict):
@@ -141,18 +143,18 @@ def init_db(force_reset=False):
         for q in questions:
             cur.execute("""INSERT INTO questions
                 (id, language, title, difficulty, code, error_type, bug_location, expected_output,
-                 cause, correction, points, hint, cause_keywords, correction_keywords)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cause, correction, points, hint, cause_keywords, correction_keywords, task)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET language=excluded.language, title=excluded.title,
                 difficulty=excluded.difficulty, code=excluded.code, error_type=excluded.error_type,
                 bug_location=excluded.bug_location, expected_output=excluded.expected_output,
                 cause=excluded.cause, correction=excluded.correction, points=excluded.points,
                 hint=excluded.hint, cause_keywords=excluded.cause_keywords,
-                correction_keywords=excluded.correction_keywords""",
+                correction_keywords=excluded.correction_keywords, task=excluded.task""",
                 (q["id"], q["language"], q["title"], q.get("difficulty", "Medium"), q["code"],
                  q["error_type"], q["bug_location"], q["expected_output"], q["cause"], q["correction"],
                  q.get("points", q.get("base_points", 20)), q.get("hint", ""),
-                 json.dumps(q.get("cause_keywords", [])), json.dumps(q.get("correction_keywords", []))))
+                 json.dumps(q.get("cause_keywords", [])), json.dumps(q.get("correction_keywords", [])), q.get("task", "")))
         waiting = conn.execute("""SELECT 1 FROM event_state WHERE id = 1
             AND event_status = 'WAITING' AND event_start_time IS NULL""").fetchone()
         if waiting:
@@ -261,8 +263,9 @@ def register_team(team_name, member1, member2, member3=None, email=None, passwor
 
 def assign_initial_questions(team_id, cur=None):
     """
-    Assigns the stable shared difficulty-balanced order for the team.
-    Q01 is unlocked immediately, subsequent questions unlock progressively upon submission.
+    Persist a fresh difficulty-balanced shuffle for this team exactly once.
+    The first assigned question unlocks immediately; submissions unlock the next.
+    Existing assignments are retained across refreshes, restarts and retries.
     """
     close_conn = False
     if cur is None:
@@ -311,6 +314,9 @@ def _answer_summary(conn, team_id, question_id, points, include_submission=False
             result[key] = evaluation.get(key, 0)
         if include_submission:
             result["submission"] = {key: row[key] for key in ("error_location", "error_type", "expected_output", "correction")}
+            snapshot = evaluation.get("question_snapshot")
+            if isinstance(snapshot, dict):
+                result.update({key: snapshot[key] for key in PUBLIC_QUESTION_FIELDS if key in snapshot})
     return result
 
 
@@ -340,7 +346,7 @@ def get_client_question(team_id, question_id):
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT q.id, q.language, q.title, q.difficulty, q.points, q.code,
+        SELECT q.id, q.language, q.title, q.task, q.difficulty, q.points, q.code,
                qa.question_order, qa.is_unlocked, qa.is_completed
         FROM question_assignments qa
         JOIN questions q ON qa.question_id = q.id

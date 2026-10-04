@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
+pytestmark = pytest.mark.usefixtures("ordered_bank")
 from database import init_db, get_db_connection, register_team, get_team_assigned_questions
 from event_manager import reset_event_data
 from scoring import (

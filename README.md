@@ -54,7 +54,7 @@ python app.py
 
 ### Question bank and scoring
 
-Teams receive **30 questions** in a shared shuffled order, with sequential unlocking and one difficult question in each group of six. Easy questions award **20 points**, Medium **25**, and Difficult **35**. Existing rounds keep their saved assignments and scores. The bank contains 15 Python questions and 15 C questions, focused on first-year programming fundamentals. The ten-question rapid-fire quiz also uses C and Python only. All teams use the same mixed-language track.
+Teams receive **30 questions** in an independently shuffled order saved for each team, with sequential unlocking and one difficult question in each group of six. Refreshing or restarting the server does not reshuffle an existing assignment. Easy questions award **20 points**, Medium **25**, and Difficult **35**. Rounds already started keep their saved assignments and scores. The bank contains 15 Python questions and 15 C questions, focused on first-year programming fundamentals. Each question states its intended behavior; expected output is what the program prints after the single-line fix. The ten-question rapid-fire quiz also uses C and Python only. All teams use the same mixed-language track.
 
 Debugging uses four scored fields:
 
@@ -154,4 +154,6 @@ All continuous canvas effects suspend when hidden/offscreen and honor reduced-mo
 ### Quiz review and feedback
 The ten rapid-fire questions use only C and Python and focus on first-year fundamentals. Each locked answer shows a tick, cross, or missed-question status; answer changes remain disabled. After completion, teams can submit six required ratings (1–5) and an optional note of up to 2,000 characters. Organizers can read responses in **Feedback**. Feedback and quiz points do not alter debugging rankings.
 
-Question-bank updates use a versioned migration. Existing teams, submissions, assignments, scores and question active flags are preserved. Historical scores are not automatically regraded against revised questions.
+Question-bank updates use a versioned migration. Existing teams, submissions, scores and question active flags are preserved. Untouched waiting teams adopt the new per-team order; assignments in rounds already started remain unchanged. Completed reviews retain the source, title, task and points originally answered. Historical scores are not automatically regraded against revised questions.
+
+Signed-in participant navigation between home, leaderboard, arena, waiting room, results and quiz keeps the same document in fullscreen. Page polling, listeners and React effects are cleaned up on departure; the shared fullscreen guard and dot field stay mounted. Actual fullscreen exits and focus departures still count. A browser reload, an external page or opening a new tab requires explicit fullscreen entry again because those actions create or leave the document.

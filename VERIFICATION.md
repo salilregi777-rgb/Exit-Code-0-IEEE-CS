@@ -101,3 +101,15 @@ The demo timer and animation controls pause together, suspend offscreen/when the
 - focus_policy_smoke.cjs passed: pre-event focus changes ignored, active-round blur warning, correlated-event deduplication and a second simulated hidden-tab departure blocking the account.
 - Organizer feedback CSV includes team identifiers, all six ratings, optional notes and submission time; formula-like text is escaped for spreadsheet safety.
 - Existing preview data was backed up before migration. No commits or pushes were made.
+
+## Persistent fullscreen and clearer questions · 4 October 2026
+
+- **239 Python tests passed**, including per-team shuffling, sequential unlocking, stable assignments, private locked prompts, historical source snapshots, and unban during a concurrent status poll. All 30 canonical single-line repairs compile/run with the expected output; logical-error samples produce a different output before correction.
+- Each team receives its own persisted shuffle, with one Difficult question per six. Existing active/completed assignments remain unchanged. Untouched waiting teams receive the new order during the versioned migration.
+- Replaced Q23, Q24 and the ambiguous Q26 precedence question. Added a visible intended-behavior statement to every question, clarified output after the fix, and repaired the extra fall-through in Q14 so one line fixes it.
+- `scripts/navigation_smoke.cjs` passed in Chrome: arena/leaderboard/home navigation, URL aliases, Back/Forward, question history, draft and answer persistence, stopped page pollers, persistent dot host, queued navigation, failed navigation, end-of-round redirects, results/quiz transitions and zero page errors. The same document and fullscreen element remained active throughout; real exits and simulated app-focus departures still warn/block.
+- `scripts/participant_policy_smoke.cjs` passed with a randomly assigned first question: registration gating, saved answers, hint deductions, all quiz answers, feedback and CSV, publication, blocking and organizer unban. The run exposed and verified a fix for an inactive/blocked status read race during unban.
+- `scripts/focus_policy_smoke.cjs` passed. Blur while fullscreen warns once; a hidden-tab signal after reentry blocks. These simulated focus signals do not claim OS-level application locking.
+- React bundle rebuilt and 22 JavaScript files syntax-checked. Homepage demo component/animation source remains unchanged; React roots now unmount/remount with page navigation while the shared dot field stays alive.
+- Local preview backup: `.local-backups/preview-before-fullscreen-navigation-20261004-124639.db`. After restart, teams, scores, all 30 answers, assignments, event state and competition controls matched the backup. All 30 historical reviews retain their original public question source. No reset, commit or push was performed.
+- Full browser reloads and external/new-tab navigation still require explicit fullscreen entry, because they leave the persistent document.

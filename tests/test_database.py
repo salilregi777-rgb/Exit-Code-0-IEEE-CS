@@ -1,7 +1,8 @@
 import pytest
 import sqlite3
 import json
-from database import init_db, get_db_connection, register_team, generate_team_id, get_team_assigned_questions, get_client_question
+import random
+from database import init_db, get_db_connection, register_team, generate_team_id, get_team_assigned_questions, get_client_question, assign_initial_questions
 from event_manager import reset_event_data
 from database import QUESTION_BANK_VERSION
 
@@ -140,7 +141,7 @@ def test_question_assignment():
     assigned = get_team_assigned_questions(team_id)
     assert len(assigned) == 30
 
-    # Q01 is unlocked immediately, subsequent questions locked
+    # The first assigned question is unlocked immediately; subsequent slots are locked.
     assert assigned[0]["is_unlocked"] == 1
     assert assigned[0]["question_order"] == 1
     assert assigned[1]["is_unlocked"] == 0
@@ -162,23 +163,31 @@ def test_question_persistence():
     second_fetch = get_team_assigned_questions(team_id)
     assert [q["id"] for q in first_fetch] == [q["id"] for q in second_fetch]
     assert [q["is_unlocked"] for q in first_fetch] == [q["is_unlocked"] for q in second_fetch]
+    assign_initial_questions(team_id)
+    init_db()
+    assert get_team_assigned_questions(team_id) == first_fetch
 
 
-def test_shared_shuffled_order_has_one_difficult_question_inside_each_six():
-    first, _ = register_team("First shared order", "One", "Two")
-    second, _ = register_team("Second shared order", "One", "Two")
-    questions = get_team_assigned_questions(first)
-    assert [q["id"] for q in questions] == [q["id"] for q in get_team_assigned_questions(second)]
-    assert [q["id"] for q in questions] != sorted(q["id"] for q in questions)
-    assert len({q["id"] for q in questions}) == 30
-    assert questions[0]["id"] == "Q01"
-    for start in range(0, 30, 6):
-        block = questions[start:start + 6]
-        difficult_positions = [i for i, q in enumerate(block) if q["difficulty"] == "Difficult"]
-        assert difficult_positions in ([2], [3])
-        assert all(q["difficulty"] in ("Easy", "Medium") for i, q in enumerate(block) if i not in difficult_positions)
-    assert {q["difficulty"] for q in questions} == {"Easy", "Medium", "Difficult"}
-    assert all(q["points"] == {"Easy": 20, "Medium": 25, "Difficult": 35}[q["difficulty"]] for q in questions)
+def test_each_team_gets_an_independent_balanced_shuffle(monkeypatch):
+    # Control entropy to make the test reproducible without fixing production order.
+    seeds = iter(("first-team", "second-team", "third-team"))
+    monkeypatch.setattr("database.random.SystemRandom", lambda: random.Random(next(seeds)))
+    orders = []
+    for name in ("First team", "Second team", "Third team"):
+        team_id, error = register_team(name, "One", "Two")
+        assert error is None
+        questions = get_team_assigned_questions(team_id)
+        orders.append(tuple(q["id"] for q in questions))
+        assert len(set(orders[-1])) == 30
+        assert questions[0]["is_unlocked"] == 1
+        assert sum(q["is_unlocked"] for q in questions) == 1
+        for start in range(0, 30, 6):
+            block = questions[start:start + 6]
+            assert sum(q["difficulty"] == "Difficult" for q in block) == 1
+        assert {q["difficulty"] for q in questions} == {"Easy", "Medium", "Difficult"}
+        assert all(q["points"] == {"Easy": 20, "Medium": 25, "Difficult": 35}[q["difficulty"]] for q in questions)
+    assert len(set(orders)) == 3
+    assert any(order[0] != "Q01" for order in orders)
 
 
 @pytest.mark.parametrize("status", ["WAITING", "LIVE", "PAUSED", "COMPLETED"])

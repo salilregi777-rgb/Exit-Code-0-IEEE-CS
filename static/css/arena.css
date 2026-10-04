@@ -351,6 +351,12 @@
   margin:12px 27px 24px;
   color:var(--text-muted)
 }
+#question-task {
+  color:var(--text-primary);
+  font-size:13px;
+  line-height:1.6;
+  margin-bottom:6px
+}
 .code-viewer {
   overflow:auto;
   flex:1;

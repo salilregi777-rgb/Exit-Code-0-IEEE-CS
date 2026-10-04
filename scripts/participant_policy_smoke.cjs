@@ -1,5 +1,6 @@
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict');
+const bank=require('../data/questions.json');
 if (process.env.EXITCODE_E2E !== '1') throw new Error('Set EXITCODE_E2E=1 only against an isolated test database; this check resets the event.');
 const base=process.env.TEST_URL || 'http://127.0.0.1:5057';
 (async()=>{
@@ -29,13 +30,15 @@ const base=process.env.TEST_URL || 'http://127.0.0.1:5057';
  for(let i=0;i<30;i+=6) assert.equal(progress.questions.slice(i,i+6).filter(q=>q.difficulty==='Difficult').length,1);
  for(const q of progress.questions) assert.equal(q.points,{Easy:20,Medium:25,Difficult:35}[q.difficulty]);
  const teamID=await page.locator('#arena').getAttribute('data-team-id');
- await page.locator('#error_location').fill('3');await page.locator('#error_type').selectOption('Logical Error');await page.locator('#expected_output').fill('10');await page.locator('#correction').fill('for i in range(len(numbers)):');
+ const first=bank.find(q=>q.id===progress.questions[0].id);const expectedScore=first.points*0.9;
+ assert.equal(await page.locator('#question-task').innerText(),first.task);
+ await page.locator('#error_location').fill(first.bug_location.match(/\d+/)[0]);await page.locator('#error_type').selectOption(first.error_type);await page.locator('#expected_output').fill(first.expected_output);await page.locator('#correction').fill(first.correction);
  await page.locator('[data-powerup=rubber-duck]').click();await page.locator('#confirm-accept').click();await page.waitForFunction(()=>!document.getElementById('rubber-duck-hint-box').hidden);
  await page.locator('#commit-fix-btn').click();await page.locator('#confirm-accept').click();await page.waitForFunction(()=>document.getElementById('commit-fix-btn').disabled && !document.getElementById('answer-status').hidden);
- progress=await (await page.request.get(base+'/api/team-progress')).json();assert.equal(progress.questions[0].is_answered,true);assert.equal(progress.questions[0].hint_used,1);assert.equal(progress.questions[0].awarded_score,18);assert.equal(progress.questions[0].field_results.length,4);assert.equal(await page.locator('#answer-status .answer-breakdown li').count(),4);assert.equal(await page.locator('.field-result').count(),4);
+ progress=await (await page.request.get(base+'/api/team-progress')).json();assert.equal(progress.questions[0].is_answered,true);assert.equal(progress.questions[0].hint_used,1);assert.equal(progress.questions[0].awarded_score,expectedScore);assert.equal(progress.questions[0].field_results.length,4);assert.equal(await page.locator('#answer-status .answer-breakdown li').count(),4);assert.equal(await page.locator('.field-result').count(),4);
  await page.reload();await enter();await page.waitForFunction(()=>document.getElementById('correction').disabled && document.getElementById('correction').value.length>0);assert.match(await page.locator('#answer-status').innerText(),/final/i);console.log('PASS final debugging answer, hint penalty, persisted status/response');
  await page.evaluate(()=>document.exitFullscreen());await page.waitForFunction(()=>document.getElementById('participant-violations').textContent.startsWith('1 /'));assert.equal(await page.locator('#participant-gate').isVisible(),true);
- const denied=await page.request.post(base+'/api/submit-bug-fix',{data:{question_id:'Q02'}});assert.equal(denied.status(),403);await enter();console.log('PASS first exit warns and gates submission until fullscreen restored');
+ const denied=await page.request.post(base+'/api/submit-bug-fix',{data:{question_id:progress.questions[1].id}});assert.equal(denied.status(),403);await enter();console.log('PASS first exit warns and gates submission until fullscreen restored');
  await post('/api/admin/event-action',{action:'end'});await page.goto(base+'/result');await enter();await page.locator('.debugging-review-question summary').first().click();assert.equal(await page.locator('.debugging-field').count(),4);await page.screenshot({path:'/tmp/exitcode-field-results.png',fullPage:true});assert.match(await page.locator('.rapid-fire-cta').getAttribute('class'),/btn-primary/);console.log('PASS individual results available after round ends and Rapid Fire action is prominent');await post('/api/admin/quiz-action',{action:'open'});
  await page.goto(base+'/quiz');await enter();await page.locator('#quiz-start').click();await page.waitForFunction(()=>!document.getElementById('quiz-play').hidden);
  for(let i=0;i<10;i++) {await page.locator('#quiz-options input').nth(i===0?1:0).check();await page.locator('#quiz-lock').click();if(i<9) await page.waitForFunction(n=>document.getElementById('quiz-progress-label').textContent.startsWith('QUESTION '+String(n).padStart(2,'0')),i+2);}
@@ -53,7 +56,7 @@ const base=process.env.TEST_URL || 'http://127.0.0.1:5057';
  await admin.goto(base+'/admin/dashboard#security');await admin.locator('#admin-security-body [data-team-unban]').first().click();await admin.locator('#confirm-accept').click();
  await page.waitForFunction(()=>!document.getElementById('participant-enter').hidden);
  security=await (await page.request.get(base+'/api/fullscreen/status')).json();assert.equal(security.violations,0);assert.equal(security.blocked,false);await enter();
- assert.equal((await (await page.request.get(base+'/api/team-progress')).json()).score,18);
+ assert.equal((await (await page.request.get(base+'/api/team-progress')).json()).score,expectedScore);
  console.log('PASS organizer unban after publication restores modal access and keeps score');
  await page.evaluate(()=>document.exitFullscreen());await page.waitForFunction(()=>document.getElementById('participant-violations').textContent.startsWith('1 /'));await enter();
  await page.evaluate(()=>document.exitFullscreen());await page.waitForFunction(()=>document.getElementById('participant-gate-title').textContent==='Account blocked');

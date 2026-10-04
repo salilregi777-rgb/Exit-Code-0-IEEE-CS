@@ -1,5 +1,7 @@
 /* Quiz results and feedback are persisted by the server; answer keys stay private. */
 (() => {
+  const page = App.page;
+  const {setInterval, setTimeout} = page;
   'use strict';
   const byId = id => document.getElementById(id);
   const show = (id, visible) => { byId(id).hidden = !visible; };
@@ -131,7 +133,7 @@
   async function sync() {
     if (polling || busy || feedbackBusy) return;
     polling = true; const epoch = requestEpoch;
-    try { const data = await App.request('/api/quiz/status'); if (epoch === requestEpoch) render(data); }
+    try { const data = await page.request('/api/quiz/status'); if (epoch === requestEpoch) render(data); }
     catch (err) { byId('quiz-error').textContent = err.message; show('quiz-error', true); }
     finally { polling = false; }
   }
@@ -139,7 +141,7 @@
     if (busy) return;
     busy = true; requestEpoch++; controls();
     try {
-      render(await App.request(url, { method: 'POST', body }));
+      render(await page.request(url, { method: 'POST', body }));
       const answer = snapshot.answers?.find(item => item.question_id === body.question_id);
       App.toast(answer ? `Answer locked. ${labels[answer.status] || ''}` : url.endsWith('answer') ? 'Answer locked.' : 'Quiz started.', answer?.status === 'incorrect' ? 'warning' : 'success');
     } catch (err) { byId('quiz-error').textContent = err.message; show('quiz-error', true); }
@@ -153,7 +155,7 @@
     feedbackBusy = true; requestEpoch++; feedbackControls();
     byId('quiz-feedback-status').textContent = 'Sending your feedback…';
     try {
-      const data = await App.request('/api/quiz/feedback', { method: 'POST', body: { ratings, note: byId('quiz-feedback-note').value.trim() } });
+      const data = await page.request('/api/quiz/feedback', { method: 'POST', body: { ratings, note: byId('quiz-feedback-note').value.trim() } });
       snapshot.feedback = data.feedback; renderFeedback();
       App.toast('Feedback received. Thank you!', 'success');
     } catch (err) { byId('quiz-feedback-status').textContent = err.message; byId('quiz-feedback-status').className = 'status-incorrect'; }

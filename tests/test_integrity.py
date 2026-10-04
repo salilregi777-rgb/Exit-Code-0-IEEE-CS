@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+pytestmark = pytest.mark.usefixtures("ordered_bank")
 
 from app import app
 from database import get_db_connection, get_client_question, init_db, register_team

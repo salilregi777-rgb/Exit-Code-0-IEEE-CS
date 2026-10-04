@@ -1,0 +1,105 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const bank=require('../data/questions.json');
+if(process.env.EXITCODE_E2E!=='1')throw new Error('Use EXITCODE_E2E=1 only on an isolated QA database; this resets the event.');
+const base=process.env.TEST_URL||'http://127.0.0.1:5057';
+(async()=>{
+ const browser=await chromium.launch({executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
+ const user=await browser.newContext({viewport:{width:1440,height:1000}}), admin=await browser.newContext(), other=await browser.newContext();
+ const page=await user.newPage(), errors=[], requests=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ page.on('request',r=>requests.push(new URL(r.url()).pathname));
+ const state=async()=> (await user.request.get(base+'/api/fullscreen/status')).json();
+ async function settled(path){await page.waitForFunction(p=>location.pathname===p&&!App.navigation.loading&&App.page.active,path);}
+ async function stable(){
+   assert.equal(await page.evaluate(()=>performance.timeOrigin),origin);
+   assert.equal(await page.evaluate(()=>document.fullscreenElement===document.documentElement&&ParticipantGuard.active),true);
+   assert.equal(await page.locator('#participant-gate').isVisible(),false);
+   assert.equal(await page.evaluate(()=>window.testDots===document.querySelector('[data-site-dot-grid]')),true);
+   assert.equal((await state()).violations,0);
+ }
+ let origin;
+ try{
+  await admin.request.post(base+'/admin/login',{form:{username:'admin',password:'exitcode0_admin_2026'}});
+  await admin.request.post(base+'/api/admin/reset-event',{data:{confirmation:'RESET EVENT'}});
+  await user.request.post(base+'/register',{form:{name:'Navigation QA',member1:'A',member2:'B'}});
+  await other.request.post(base+'/register',{form:{name:'Other order QA',member1:'C',member2:'D'}});
+  const firstOrder=(await (await user.request.get(base+'/api/team-progress')).json()).questions;
+  const secondOrder=(await (await other.request.get(base+'/api/team-progress')).json()).questions;
+  assert.notDeepEqual(firstOrder.map(q=>q.id),secondOrder.map(q=>q.id));
+  for(const order of [firstOrder,secondOrder])for(let i=0;i<30;i+=6)assert.equal(order.slice(i,i+6).filter(q=>q.difficulty==='Difficult').length,1);
+  console.log('PASS each team has an independent persisted order with one difficult question per six');
+  await page.goto(base+'/waiting');
+  await admin.request.post(base+'/api/admin/event-action',{data:{action:'start'}});
+  await page.waitForURL(/arena/);
+  await page.locator('#participant-enter').click();
+  await page.waitForFunction(()=>ParticipantGuard.active&&document.getElementById('correction')&&!document.getElementById('correction').disabled);
+  origin=await page.evaluate(()=>{window.testDots=document.querySelector('[data-site-dot-grid]');return performance.timeOrigin;});
+  const first=bank.find(q=>q.id===firstOrder[0].id);
+  assert.equal(await page.locator('#question-task').innerText(),first.task);
+  await page.locator('#correction').fill('unsent draft');
+  for(let i=0;i<3;i++){
+    await page.locator('a[href="/leaderboard"]:visible').first().click();await settled('/leaderboard');await stable();
+    await page.locator('a[href="/debug-arena"]:visible').first().click();await settled('/arena');
+    await page.waitForFunction(()=>document.getElementById('correction').value==='unsent draft');await stable();
+    await page.evaluate(()=>App.navigation.navigate('/'));await settled('/');
+    await page.waitForFunction(()=>document.querySelector('[data-demo-motion]')&&document.documentElement.dataset.reactBits==='ready');await stable();
+    const start=requests.length;
+    await page.waitForTimeout(10500);
+    assert.equal(requests.slice(start).filter(p=>p==='/api/team-progress').length,0,'arena polling must stop on home');
+    await page.locator('a[href="/debug-arena"]:visible').first().click();await settled('/arena');await stable();
+  }
+  await page.goBack();await settled('/');await stable();
+  await page.goForward();await settled('/arena');await stable();
+  console.log('PASS repeated arena, leaderboard and home navigation plus Back/Forward retain fullscreen, dots and drafts; old pollers stop');
+  await page.route('**/leaderboard',async route=>{await new Promise(resolve=>setTimeout(resolve,250));await route.continue();});
+  await page.evaluate(()=>{App.navigation.navigate('/leaderboard');App.navigation.navigate('/');});
+  await settled('/');await stable();
+  await page.unroute('**/leaderboard');
+  await page.route('**/leaderboard',route=>route.abort('failed'));
+  await page.evaluate(()=>App.navigation.navigate('/leaderboard'));
+  await settled('/');await stable();
+  await page.unroute('**/leaderboard');
+  await page.locator('a[href="/debug-arena"]:visible').first().click();await settled('/arena');
+  await page.waitForFunction(()=>document.getElementById('correction').value==='unsent draft');await stable();
+  await page.screenshot({path:'/tmp/exitcode-clear-question-fullscreen.png'});
+  console.log('PASS queued navigation and network failure preserve the active page and fullscreen');
+  await page.locator('#error_location').fill(first.bug_location.match(/\d+/)[0]);
+  await page.locator('#error_type').selectOption(first.error_type);
+  await page.locator('#expected_output').fill(first.expected_output);
+  await page.locator('#correction').fill(first.correction);
+  await page.locator('#commit-fix-btn').click();await page.locator('#confirm-accept').click();
+  await page.waitForFunction(()=>!document.getElementById('answer-status').hidden);
+  await page.locator('#next-question').click();
+  await page.waitForFunction(q=>document.getElementById('form-question-id').value===q,firstOrder[1].id);await stable();
+  assert.equal(await page.locator('#question-task').innerText(),bank.find(q=>q.id===firstOrder[1].id).task);
+  // The initial arena route may omit ?q; explicitly open the answered question then test question history.
+  await page.locator('[data-question="'+first.id+'"]').click();
+  await page.waitForFunction(q=>document.getElementById('form-question-id').value===q,first.id);
+  await page.goBack();await page.waitForFunction(q=>document.getElementById('form-question-id').value===q,firstOrder[1].id);await stable();
+  await page.goForward();await page.waitForFunction(q=>document.getElementById('form-question-id').value===q,first.id);await stable();
+  assert.equal(await page.locator('#correction').inputValue(),first.correction);
+  assert.equal(await page.locator('#correction').isDisabled(),true);
+  console.log('PASS question history preserves saved answers and updates intended-behavior prompts');
+  await admin.request.post(base+'/api/admin/event-action',{data:{action:'end'}});
+  await page.waitForURL(/result/);await settled('/result');await stable();
+  await admin.request.post(base+'/api/admin/quiz-action',{data:{action:'open'}});
+  await page.locator('a[href="/quiz"]').first().click();await settled('/quiz');await stable();
+  await page.locator('#quiz-start').click();await page.locator('#quiz-play').waitFor({state:'visible'});
+  await page.locator('a[href="/debug-arena"]:visible').first().click();await settled('/result');await stable();
+  await page.locator('a[href="/quiz"]').first().click();await settled('/quiz');await stable();
+  await page.locator('#quiz-play').waitFor({state:'visible'});
+  await admin.request.post(base+'/api/admin/publish-results',{data:{}});
+  await page.evaluate(()=>App.navigation.navigate('/final-result'));await settled('/result');await stable();
+  console.log('PASS end-of-round, results and quiz transitions keep fullscreen and quiz progress');
+  await page.evaluate(()=>document.exitFullscreen());
+  await page.waitForFunction(()=>document.getElementById('participant-violations').textContent.startsWith('1 /'));
+  assert.equal((await state()).violations,1);
+  await page.locator('#participant-enter').click();await page.waitForFunction(()=>ParticipantGuard.active);
+  await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
+  await page.waitForFunction(()=>document.getElementById('participant-gate-title').textContent==='Account blocked');
+  assert.equal((await state()).blocked,true);
+  assert.deepEqual(errors,[]);
+  console.log('PASS actual fullscreen exit and app-switch signals still warn/block; zero browser errors');
+ }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

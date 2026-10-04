@@ -27,4 +27,4 @@
   <div class="form-error quiz-error" id="quiz-error" hidden role="alert"></div><div class="quiz-footer"><span class="connection-status" data-connection><span class="status-dot"></span><span data-connection-label>SERVER ONLINE</span></span><a href="/leaderboard" class="text-link">Debugging leaderboard ↗</a></div>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/quiz.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script data-page-script src="{{ url_for('static', filename='js/quiz.js') }}" defer></script>{% endblock %}

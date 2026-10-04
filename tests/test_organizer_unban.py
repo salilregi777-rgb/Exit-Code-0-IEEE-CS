@@ -1,5 +1,6 @@
 """Organizer restoration preserves work and starts a fresh enforcement interval."""
 import pytest
+pytestmark = pytest.mark.usefixtures("ordered_bank")
 
 from app import app
 from database import get_db_connection, init_db
@@ -91,6 +92,34 @@ def test_unban_preserves_work_and_audit_and_rejects_old_departures(team_clients)
     assert not retry['restored'] and retry['violations'] == 1 and retry['is_active']
     signal(participant, 'fullscreen_enter', 'fresh-entry-2')
     assert signal(participant, 'tab_hidden', 'fresh-departure-2', 'fresh-entry-2')['blocked']
+
+
+def test_unban_during_status_poll_does_not_clear_participant_session(team_clients, monkeypatch):
+    import importlib
+    module = importlib.import_module('app')
+    participant, organizer, team_id = team_clients
+    block(participant)
+    original = module.guard_snapshot
+    restored = False
+
+    def restore_before_snapshot(current_team):
+        nonlocal restored
+        if not restored:
+            restored = True
+            conn = get_db_connection()
+            conn.execute('BEGIN IMMEDIATE')
+            conn.execute('UPDATE teams SET is_active=1 WHERE id=?', (current_team,))
+            conn.execute('UPDATE participant_security SET blocked=0, violations=0 WHERE team_id=?', (current_team,))
+            conn.commit()
+            conn.close()
+        return original(current_team)
+
+    monkeypatch.setattr(module, 'guard_snapshot', restore_before_snapshot)
+    response = participant.get('/api/fullscreen/status')
+    assert response.status_code == 200
+    assert response.get_json()['team_active'] and not response.get_json()['blocked']
+    with participant.session_transaction() as sess:
+        assert sess['team_id'] == team_id
 
 
 def test_unban_available_after_publication_and_visible_in_live_dashboard(team_clients):

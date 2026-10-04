@@ -2,6 +2,7 @@
 import json
 
 import pytest
+pytestmark = pytest.mark.usefixtures("ordered_bank")
 
 from app import app
 from database import init_db, register_team, get_db_connection, get_client_question, get_team_assigned_questions

@@ -1,5 +1,7 @@
 /* Lightweight, escaped syntax tokens: source text never becomes executable HTML. */
 (() => {
+  const page = App.page;
+  const {setInterval, setTimeout} = page;
   'use strict';
   const keywords = new Set('abstract assert boolean bool break byte case catch char class const continue def default del do double elif else enum except extends false False final finally float for from if import in int interface is lambda long native new None null package pass private protected public raise return short signed sizeof static string String struct super switch synchronized this throw throws true True try typedef unsigned using var virtual void volatile while with yield print printf include'.split(' '));
   const tokenPattern = /(\/\/.*$|#.*$|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b[A-Za-z_]\w*\b|[+*=!<>%&|]+)/g;
@@ -57,5 +59,5 @@
     viewer.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && ['c', 'x', 'a', 's'].includes(e.key.toLowerCase())) { e.preventDefault(); App.toast('Source copying is restricted in competition mode.', 'warning'); } });
     document.getElementById('error_location').addEventListener('input', e => selectLine(e.target.value, false));
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+  if (document.readyState === 'loading') page.listen(document, 'DOMContentLoaded', init); else init();
 })();

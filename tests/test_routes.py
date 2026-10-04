@@ -1,4 +1,5 @@
 import pytest
+pytestmark = pytest.mark.usefixtures("ordered_bank")
 import re
 from app import app
 from database import init_db, get_db_connection, register_team

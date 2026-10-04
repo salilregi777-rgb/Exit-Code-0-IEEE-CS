@@ -33,7 +33,7 @@
     try { apply(await App.request('/api/event-status')); } catch (_) { App.setConnection(false); }
     finally { pending = false; pollTimeout = setTimeout(sync, document.hidden ? 12000 : 5000); }
   }
-  window.EventClock = { sync, format, get state() { return state; } };
+  window.EventClock = { sync, apply, format, get state() { return state; } };
   // Backward compatible display adapter, without adding extra requests or timers.
   window.EventTimer = class {
     constructor(id, onExpire) { this.el = document.getElementById(id); this.listener = e => { if (this.el) this.el.textContent = e.detail.formatted_time; if (e.detail.event_status === 'COMPLETED' && onExpire) { onExpire(); onExpire = null; } }; document.addEventListener('eventstate', this.listener); }

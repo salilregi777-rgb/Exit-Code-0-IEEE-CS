@@ -254,6 +254,10 @@ def process_submission(team_id, question_id, submission_data, enforce_live=False
             dict(question), submission_data, is_double_commit=is_double,
             hint_used=is_hint, swap_used=bool(swapped)
         )
+        # Keep completed reviews tied to the exact public prompt answered, even
+        # when organisers update the question bank later.
+        from database import PUBLIC_QUESTION_FIELDS
+        eval_result["question_snapshot"] = {key: question[key] for key in PUBLIC_QUESTION_FIELDS}
 
         # Record submission in SQLite
         cur.execute("""

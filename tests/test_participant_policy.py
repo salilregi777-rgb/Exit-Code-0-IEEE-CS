@@ -1,5 +1,6 @@
 import uuid
 import pytest
+pytestmark = pytest.mark.usefixtures("ordered_bank")
 from app import app
 from database import init_db, register_team, get_db_connection, get_client_question
 from event_manager import end_event, pause_event, start_event, reset_event_data

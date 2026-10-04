@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -14,3 +15,10 @@ os.environ["DATABASE_PATH"] = str(Path(_test_database_directory.name) / "competi
 
 def pytest_sessionfinish(session, exitstatus):
     _test_database_directory.cleanup()
+
+
+@pytest.fixture
+def ordered_bank(monkeypatch):
+    """Use known fixtures for scoring cases; shuffle tests use real assignment."""
+    import database
+    monkeypatch.setattr(database, "balanced_question_order", lambda questions: sorted(questions, key=lambda q: q["id"]))
